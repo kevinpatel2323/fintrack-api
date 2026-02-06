@@ -20,6 +20,7 @@ export class UpdateTransactionFriendTagDto {
     TransactionFriendDirection.IOwe,
     TransactionFriendDirection.OwesMe,
     TransactionFriendDirection.NothingOutstanding,
+    TransactionFriendDirection.Settlement,
   ])
   direction?: TransactionFriendDirection;
 

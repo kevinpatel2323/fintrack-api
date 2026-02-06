@@ -19,6 +19,7 @@ export enum TransactionFriendDirection {
   IOwe = 'I_OWE',
   OwesMe = 'OWES_ME',
   NothingOutstanding = 'NOTHING_OUTSTANDING',
+  Settlement = 'SETTLEMENT',
 }
 
 @Entity({ name: 'transaction_friend_tags' })
