@@ -113,6 +113,20 @@ export class FriendsService {
       throw new ConflictException('Friend already tagged on this transaction.');
     }
 
+    if (
+      dto.direction === TransactionFriendDirection.NothingOutstanding &&
+      dto.amount !== 0
+    ) {
+      throw new ConflictException('Nothing outstanding tags must have amount 0.');
+    }
+
+    if (
+      dto.direction !== TransactionFriendDirection.NothingOutstanding &&
+      dto.amount <= 0
+    ) {
+      throw new ConflictException('Amount must be greater than 0.');
+    }
+
     const tag = this.tagRepository.create({
       transactionId,
       friendId: String(dto.friendId),
@@ -153,10 +167,26 @@ export class FriendsService {
       }
     }
 
+    const nextDirection = dto.direction ?? tag.direction;
+    const nextAmount = dto.amount ?? tag.amount;
+
+    if (
+      nextDirection === TransactionFriendDirection.NothingOutstanding &&
+      nextAmount !== 0
+    ) {
+      throw new ConflictException('Nothing outstanding tags must have amount 0.');
+    }
+    if (
+      nextDirection !== TransactionFriendDirection.NothingOutstanding &&
+      nextAmount <= 0
+    ) {
+      throw new ConflictException('Amount must be greater than 0.');
+    }
+
     const updated = this.tagRepository.merge(tag, {
       friendId: dto.friendId ? String(dto.friendId) : tag.friendId,
-      amount: dto.amount ?? tag.amount,
-      direction: dto.direction ?? tag.direction,
+      amount: nextAmount,
+      direction: nextDirection,
       note: dto.note ?? tag.note,
     });
 

@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Account } from './account.entity';
+import { StatementImport } from './statement-import.entity';
 
 const numericTransformer = {
   to: (value: number) => value,
@@ -30,6 +31,14 @@ export class Transaction {
   @ManyToOne(() => Account)
   @JoinColumn({ name: 'account_id' })
   account?: Account;
+
+  @Index()
+  @Column({ name: 'statement_import_id', type: 'bigint', nullable: true })
+  statementImportId!: string | null;
+
+  @ManyToOne(() => StatementImport, { nullable: true })
+  @JoinColumn({ name: 'statement_import_id' })
+  statementImport?: StatementImport | null;
 
   @Column({ type: 'text' })
   narration!: string;

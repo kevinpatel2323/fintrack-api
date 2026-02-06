@@ -47,6 +47,27 @@ export class ImportsController {
     return { message: 'Import complete', accountNumber: parsed.accountNumber, ...result };
   }
 
+  @Post('hdfc/preview')
+  @UseInterceptors(FileInterceptor('statement'))
+  async previewHdfc(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('Missing file: statement');
+    }
+
+    const parsed = parseHdfcStatement(file.buffer);
+    if (parsed.entries.length === 0) {
+      throw new BadRequestException('No entries parsed from statement.');
+    }
+
+    const result = await this.importsService.previewStatement(parsed.entries, parsed.accountNumber);
+    return { message: 'Preview ready', ...result };
+  }
+
+  @Post(':id/revert')
+  async revertImport(@Param('id', ParseIntPipe) id: number) {
+    return this.importsService.revertImport(String(id));
+  }
+
   @Get('last')
   async getLastImport(@Query('accountNumber') accountNumber?: string) {
     const last = await this.importsService.getLastImport(accountNumber);

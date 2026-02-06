@@ -1,23 +1,9 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class AddFriendsAndTags1707063000000 implements MigrationInterface {
-  name = 'AddFriendsAndTags1707063000000';
+export class TransactionFriendTags1707000040000 implements MigrationInterface {
+  name = 'TransactionFriendTags1707000040000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
-      CREATE TABLE IF NOT EXISTS friends (
-        id BIGSERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT,
-        phone TEXT,
-        note TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-
-    await queryRunner.query(`CREATE INDEX IF NOT EXISTS idx_friends_name ON friends (name);`);
-
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS transaction_friend_tags (
         id BIGSERIAL PRIMARY KEY,
@@ -43,6 +29,5 @@ export class AddFriendsAndTags1707063000000 implements MigrationInterface {
 
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DROP TABLE IF EXISTS transaction_friend_tags;`);
-    await queryRunner.query(`DROP TABLE IF EXISTS friends;`);
   }
 }

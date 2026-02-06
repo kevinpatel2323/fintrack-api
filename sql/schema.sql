@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   id BIGSERIAL PRIMARY KEY,
   transaction_date DATE NOT NULL,
   account_id BIGINT NOT NULL,
+  statement_import_id BIGINT,
   narration TEXT NOT NULL,
   withdrawal NUMERIC(14,2) NOT NULL DEFAULT 0,
   deposit NUMERIC(14,2) NOT NULL DEFAULT 0,
@@ -21,6 +22,20 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (transaction_date);
 CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions (account_id, transaction_date);
+CREATE INDEX IF NOT EXISTS idx_transactions_statement_import ON transactions (statement_import_id);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_transactions_account'
+  ) THEN
+    ALTER TABLE transactions
+      ADD CONSTRAINT fk_transactions_account
+      FOREIGN KEY (account_id) REFERENCES accounts(id);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS statement_imports (
   id BIGSERIAL PRIMARY KEY,
@@ -38,6 +53,19 @@ CREATE TABLE IF NOT EXISTS statement_imports (
 
 CREATE INDEX IF NOT EXISTS idx_statement_imports_uploaded_at ON statement_imports (uploaded_at);
 CREATE INDEX IF NOT EXISTS idx_statement_imports_account ON statement_imports (account_id);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'fk_transactions_statement_import'
+  ) THEN
+    ALTER TABLE transactions
+      ADD CONSTRAINT fk_transactions_statement_import
+      FOREIGN KEY (statement_import_id) REFERENCES statement_imports(id);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS friends (
   id BIGSERIAL PRIMARY KEY,
