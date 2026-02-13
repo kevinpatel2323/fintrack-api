@@ -53,6 +53,14 @@ export class TransactionFriendTag {
   @Column({ type: 'text', nullable: true })
   note!: string | null;
 
+  @Index()
+  @Column({ name: 'linked_transaction_id', type: 'bigint', nullable: true })
+  linkedTransactionId?: string | null;
+
+  @ManyToOne(() => TransactionFriendTag, { nullable: true })
+  @JoinColumn({ name: 'linked_transaction_id' })
+  linkedTransaction?: TransactionFriendTag | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 }

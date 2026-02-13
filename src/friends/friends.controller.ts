@@ -59,4 +59,10 @@ export class FriendsController {
   async getFriendSummary(@Param('id', ParseIntPipe) id: number) {
     return this.friendsService.getFriendSummary(String(id));
   }
+
+  @Get(':id/linkable-transactions')
+  async getLinkableTransactions(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.friendsService.getLinkeableTransactionsForFriend(String(id));
+    return { count: data.length, data };
+  }
 }

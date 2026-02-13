@@ -88,7 +88,7 @@ export class FriendsService {
   async listTransactionTags(transactionId: string) {
     return this.tagRepository.find({
       where: { transactionId },
-      relations: ['friend'],
+      relations: ['friend', 'linkedTransaction', 'linkedTransaction.transaction'],
       order: { id: 'ASC' },
     });
   }
@@ -127,12 +127,36 @@ export class FriendsService {
       throw new ConflictException('Amount must be greater than 0.');
     }
 
+    // Validate linked transaction if provided
+    if (dto.linkedTransactionId) {
+      if (dto.direction !== TransactionFriendDirection.Settlement) {
+        throw new ConflictException('Only settlement tags can have a linked transaction.');
+      }
+
+      const linkedTag = await this.tagRepository.findOne({
+        where: { id: String(dto.linkedTransactionId) },
+      });
+
+      if (!linkedTag) {
+        throw new NotFoundException('Linked transaction tag not found.');
+      }
+
+      if (linkedTag.friendId !== String(dto.friendId)) {
+        throw new ConflictException('Linked transaction must be with the same friend.');
+      }
+
+      if (linkedTag.direction === TransactionFriendDirection.Settlement) {
+        throw new ConflictException('Cannot link to another settlement transaction.');
+      }
+    }
+
     const tag = this.tagRepository.create({
       transactionId,
       friendId: String(dto.friendId),
       amount: dto.amount,
       direction: dto.direction,
       note: dto.note ?? null,
+      linkedTransactionId: dto.linkedTransactionId ? String(dto.linkedTransactionId) : null,
     });
 
     return this.tagRepository.save(tag);
@@ -183,11 +207,41 @@ export class FriendsService {
       throw new ConflictException('Amount must be greater than 0.');
     }
 
+    const nextLinkedTransactionId = dto.linkedTransactionId !== undefined
+      ? dto.linkedTransactionId
+      : tag.linkedTransactionId;
+
+    if (nextLinkedTransactionId) {
+      if (nextDirection !== TransactionFriendDirection.Settlement) {
+        throw new ConflictException('Only settlement tags can have a linked transaction.');
+      }
+
+      const linkedTag = await this.tagRepository.findOne({
+        where: { id: String(nextLinkedTransactionId) },
+      });
+
+      if (!linkedTag) {
+        throw new NotFoundException('Linked transaction tag not found.');
+      }
+
+      const nextFriendId = dto.friendId ? String(dto.friendId) : tag.friendId;
+      if (linkedTag.friendId !== nextFriendId) {
+        throw new ConflictException('Linked transaction must be with the same friend.');
+      }
+
+      if (linkedTag.direction === TransactionFriendDirection.Settlement) {
+        throw new ConflictException('Cannot link to another settlement transaction.');
+      }
+    }
+
     const updated = this.tagRepository.merge(tag, {
       friendId: dto.friendId ? String(dto.friendId) : tag.friendId,
       amount: nextAmount,
       direction: nextDirection,
       note: dto.note ?? tag.note,
+      linkedTransactionId: dto.linkedTransactionId !== undefined
+        ? (dto.linkedTransactionId ? String(dto.linkedTransactionId) : null)
+        : tag.linkedTransactionId,
     });
 
     return this.tagRepository.save(updated);
@@ -211,11 +265,32 @@ export class FriendsService {
       throw new NotFoundException('Friend not found.');
     }
 
-    return this.tagRepository.find({
+    const tags = await this.tagRepository.find({
       where: { friendId },
-      relations: ['transaction'],
+      relations: ['transaction', 'linkedTransaction', 'linkedTransaction.transaction'],
       order: { id: 'DESC' },
     });
+
+    // For each tag, find settlements that link to it
+    const tagsWithSettlements = await Promise.all(
+      tags.map(async (tag) => {
+        const settledBy = await this.tagRepository.find({
+          where: {
+            friendId,
+            linkedTransactionId: tag.id,
+            direction: TransactionFriendDirection.Settlement,
+          },
+          relations: ['transaction'],
+        });
+
+        return {
+          ...tag,
+          settledBy: settledBy.length > 0 ? settledBy : undefined,
+        };
+      })
+    );
+
+    return tagsWithSettlements;
   }
 
   async getFriendSummary(friendId: string) {
@@ -234,18 +309,44 @@ export class FriendsService {
         `COALESCE(SUM(CASE WHEN tag.direction = :owesMe THEN tag.amount ELSE 0 END), 0)`,
         'total_owes_me',
       )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN tag.direction = :settlement THEN tag.amount ELSE 0 END), 0)`,
+        'total_settlements',
+      )
       .where('tag.friend_id = :friendId', { friendId })
       .setParameters({
         iOwe: TransactionFriendDirection.IOwe,
         owesMe: TransactionFriendDirection.OwesMe,
+        settlement: TransactionFriendDirection.Settlement,
       })
       .getRawOne();
 
+    const totalIOwe = Number(raw?.total_i_owe ?? 0);
+    const totalOwesMe = Number(raw?.total_owes_me ?? 0);
+    const totalSettlements = Number(raw?.total_settlements ?? 0);
+    
+    // Net = (what they owe me) - (what I owe them) - settlements
+    // Settlements reduce the outstanding balance
+    const net = totalOwesMe - totalIOwe - totalSettlements;
+
     return {
       friendId,
-      totalIOwe: Number(raw?.total_i_owe ?? 0),
-      totalOwesMe: Number(raw?.total_owes_me ?? 0),
-      net: Number(raw?.total_owes_me ?? 0) - Number(raw?.total_i_owe ?? 0),
+      totalIOwe,
+      totalOwesMe,
+      totalSettlements,
+      net,
     };
+  }
+
+  async getLinkeableTransactionsForFriend(friendId: string) {
+    return this.tagRepository.find({
+      where: {
+        friendId,
+      },
+      relations: ['transaction'],
+      order: { id: 'DESC' },
+    }).then(tags =>
+      tags.filter(tag => tag.direction !== TransactionFriendDirection.Settlement)
+    );
   }
 }

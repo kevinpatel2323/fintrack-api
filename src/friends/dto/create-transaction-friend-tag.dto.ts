@@ -25,4 +25,10 @@ export class CreateTransactionFriendTagDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @IsPositive()
+  linkedTransactionId?: number;
 }
