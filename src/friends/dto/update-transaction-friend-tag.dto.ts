@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsNumber, IsOptional, IsPositive, IsString, MaxLength, Min } from 'class-validator';
+import { IsArray, IsIn, IsNumber, IsOptional, IsPositive, IsString, MaxLength, Min } from 'class-validator';
 import { TransactionFriendDirection } from '../../database/entities/transaction-friend-tag.entity';
 
 export class UpdateTransactionFriendTagDto {
@@ -30,8 +30,8 @@ export class UpdateTransactionFriendTagDto {
   note?: string;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @IsPositive()
-  linkedTransactionId?: number;
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsPositive({ each: true })
+  linkedTransactionIds?: number[];
 }

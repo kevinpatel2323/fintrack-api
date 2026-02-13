@@ -7,6 +7,7 @@ import { StatementImport } from './database/entities/statement-import.entity';
 import { Account } from './database/entities/account.entity';
 import { Friend } from './database/entities/friend.entity';
 import { TransactionFriendTag } from './database/entities/transaction-friend-tag.entity';
+import { SettlementLink } from './database/entities/settlement-link.entity';
 import { FriendsModule } from './friends/friends.module';
 
 @Module({
@@ -17,7 +18,7 @@ import { FriendsModule } from './friends/friends.module';
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: process.env.DATABASE_URL,
-      entities: [Transaction, StatementImport, Account, Friend, TransactionFriendTag],
+      entities: [Transaction, StatementImport, Account, Friend, TransactionFriendTag, SettlementLink],
       synchronize: false,
     }),
     ImportsModule,
