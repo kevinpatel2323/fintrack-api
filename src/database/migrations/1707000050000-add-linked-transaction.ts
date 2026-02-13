@@ -4,7 +4,7 @@ export class AddLinkedTransaction1707000050000 implements MigrationInterface {
   name = 'AddLinkedTransaction1707000050000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // Add linked_transaction_id column with self-referencing FK
+    // Add linked_transaction_id column with self-referencing foreign key
     await queryRunner.query(`
       ALTER TABLE transaction_friend_tags 
       ADD COLUMN linked_transaction_id BIGINT NULL;
