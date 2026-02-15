@@ -61,6 +61,9 @@ export class Transaction {
   @Column({ name: 'upi_bank', type: 'text', nullable: true })
   upiBank!: string | null;
 
+  @Column({ name: 'is_manual', type: 'boolean', default: false })
+  isManual!: boolean;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 }
