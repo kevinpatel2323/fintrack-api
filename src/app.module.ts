@@ -9,6 +9,7 @@ import { Friend } from './database/entities/friend.entity';
 import { TransactionFriendTag } from './database/entities/transaction-friend-tag.entity';
 import { SettlementLink } from './database/entities/settlement-link.entity';
 import { FriendsModule } from './friends/friends.module';
+import { TransactionsModule } from './transactions/transactions.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { FriendsModule } from './friends/friends.module';
     }),
     ImportsModule,
     FriendsModule,
+    TransactionsModule,
   ],
 })
 export class AppModule {}
