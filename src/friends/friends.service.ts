@@ -17,6 +17,7 @@ import { ListFriendsQueryDto } from './dto/list-friends.dto';
 import { UpdateFriendDto } from './dto/update-friend.dto';
 import { CreateTransactionFriendTagDto } from './dto/create-transaction-friend-tag.dto';
 import { UpdateTransactionFriendTagDto } from './dto/update-transaction-friend-tag.dto';
+import { FriendTransactionsQueryDto } from './dto/friend-transactions-query.dto';
 
 @Injectable()
 export class FriendsService {
@@ -307,49 +308,67 @@ export class FriendsService {
     return { deleted: true };
   }
 
-  async listFriendTransactions(friendId: string) {
+  async listFriendTransactions(friendId: string, query?: FriendTransactionsQueryDto) {
     const friend = await this.friendRepository.findOne({ where: { id: friendId } });
     if (!friend) {
       throw new NotFoundException('Friend not found.');
     }
 
-    const tags = await this.tagRepository.find({
-      where: { friendId },
-      relations: ['transaction'],
-      order: { id: 'DESC' },
-    });
+    const hasDateRange = Boolean(query?.start || query?.end);
+    let tags: TransactionFriendTag[];
 
-    // For each tag, load settlement info
-    const tagsWithSettlementInfo = await Promise.all(
+    if (hasDateRange) {
+      const qb = this.tagRepository
+        .createQueryBuilder('tag')
+        .leftJoinAndSelect('tag.transaction', 'transaction')
+        .where('tag.friend_id = :friendId', { friendId });
+
+      if (query?.start) {
+        qb.andWhere('transaction.transaction_date >= :start', { start: query.start });
+      }
+      if (query?.end) {
+        qb.andWhere('transaction.transaction_date <= :end', { end: query.end });
+      }
+
+      qb.orderBy('transaction.transaction_date', 'ASC').addOrderBy('tag.id', 'ASC');
+      tags = await qb.getMany();
+    } else {
+      tags = await this.tagRepository.find({
+        where: { friendId },
+        relations: ['transaction'],
+        order: { id: 'DESC' },
+      });
+    }
+
+    return this.attachSettlementInfoToTags(tags);
+  }
+
+  private async attachSettlementInfoToTags(tags: TransactionFriendTag[]) {
+    return Promise.all(
       tags.map(async (tag) => {
-        // If it's a settlement, load what it settled
         let settlesTransactions;
         if (tag.direction === TransactionFriendDirection.Settlement) {
           const links = await this.settlementLinkRepository.find({
             where: { settlementTagId: tag.id },
             relations: ['settledTag', 'settledTag.transaction'],
           });
-          settlesTransactions = links.map(link => link.settledTag);
+          settlesTransactions = links.map((link) => link.settledTag);
         }
 
-        // Find settlements that settled this tag
         const settlementLinks = await this.settlementLinkRepository.find({
           where: { settledTagId: tag.id },
           relations: ['settlementTag', 'settlementTag.transaction'],
         });
-        const settledBy = settlementLinks.length > 0 
-          ? settlementLinks.map(link => link.settlementTag)
-          : undefined;
+        const settledBy =
+          settlementLinks.length > 0 ? settlementLinks.map((link) => link.settlementTag) : undefined;
 
         return {
           ...tag,
           settlesTransactions,
           settledBy,
         };
-      })
+      }),
     );
-
-    return tagsWithSettlementInfo;
   }
 
   async getFriendSummary(friendId: string) {

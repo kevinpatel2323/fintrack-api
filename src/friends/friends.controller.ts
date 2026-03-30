@@ -14,6 +14,7 @@ import { FriendsService } from './friends.service';
 import { CreateFriendDto } from './dto/create-friend.dto';
 import { UpdateFriendDto } from './dto/update-friend.dto';
 import { ListFriendsQueryDto } from './dto/list-friends.dto';
+import { FriendTransactionsQueryDto } from './dto/friend-transactions-query.dto';
 
 @Controller('friends')
 export class FriendsController {
@@ -50,8 +51,11 @@ export class FriendsController {
   }
 
   @Get(':id/transactions')
-  async listFriendTransactions(@Param('id', ParseIntPipe) id: number) {
-    const data = await this.friendsService.listFriendTransactions(String(id));
+  async listFriendTransactions(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: FriendTransactionsQueryDto,
+  ) {
+    const data = await this.friendsService.listFriendTransactions(String(id), query);
     return { count: data.length, data };
   }
 
