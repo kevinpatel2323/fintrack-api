@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Transaction } from '../database/entities/transaction.entity';
 import { Account } from '../database/entities/account.entity';
+import { Category } from '../database/entities/category.entity';
 import { CreateManualTransactionDto } from './dto/create-manual-transaction.dto';
 
 @Injectable()
@@ -12,6 +13,8 @@ export class TransactionsService {
     private readonly transactionsRepository: Repository<Transaction>,
     @InjectRepository(Account)
     private readonly accountsRepository: Repository<Account>,
+    @InjectRepository(Category)
+    private readonly categoriesRepository: Repository<Category>,
   ) {}
 
   private async findAccountByNumber(accountNumber: string): Promise<Account | null> {
@@ -61,6 +64,7 @@ export class TransactionsService {
     transaction.upiDescription = dto.upiDescription?.trim() || null;
     transaction.upiBank = dto.upiBank?.trim() || null;
     transaction.isManual = true;
+    transaction.categoryId = null;
 
     const saved = await this.transactionsRepository.save(transaction);
     const withAccount = await this.transactionsRepository.findOne({
@@ -71,5 +75,27 @@ export class TransactionsService {
     if (!withAccount) return saved;
     const { account: loadedAccount, accountId, ...rest } = withAccount;
     return { ...rest, accountNumber: loadedAccount?.accountNumber ?? null };
+  }
+
+  async setTransactionCategory(
+    transactionId: string,
+    categoryId: string | null,
+  ): Promise<{ id: string; categoryId: string | null; category: Category | null }> {
+    const transaction = await this.transactionsRepository.findOne({
+      where: { id: transactionId },
+    });
+    if (!transaction) throw new NotFoundException('Transaction not found.');
+
+    if (categoryId !== null) {
+      const category = await this.categoriesRepository.findOne({ where: { id: categoryId } });
+      if (!category) throw new NotFoundException('Category not found.');
+      transaction.categoryId = categoryId;
+      await this.transactionsRepository.save(transaction);
+      return { id: transaction.id, categoryId, category };
+    } else {
+      transaction.categoryId = null;
+      await this.transactionsRepository.save(transaction);
+      return { id: transaction.id, categoryId: null, category: null };
+    }
   }
 }

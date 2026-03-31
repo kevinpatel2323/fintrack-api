@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Account } from './account.entity';
 import { StatementImport } from './statement-import.entity';
+import { Category } from './category.entity';
 
 const numericTransformer = {
   to: (value: number) => value,
@@ -63,6 +64,14 @@ export class Transaction {
 
   @Column({ name: 'is_manual', type: 'boolean', default: false })
   isManual!: boolean;
+
+  @Index()
+  @Column({ name: 'category_id', type: 'bigint', nullable: true })
+  categoryId!: string | null;
+
+  @ManyToOne(() => Category, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'category_id' })
+  category?: Category | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;

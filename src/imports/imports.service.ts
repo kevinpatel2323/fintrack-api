@@ -72,6 +72,7 @@ export class ImportsService {
     const query = this.transactionsRepository
       .createQueryBuilder('t')
       .leftJoinAndSelect('t.account', 'account')
+      .leftJoinAndSelect('t.category', 'category')
       .where('t.transactionDate BETWEEN :start AND :end', { start, end });
 
     if (accountNumber) {
