@@ -8,11 +8,21 @@ import { Friend } from './entities/friend.entity';
 import { TransactionFriendTag } from './entities/transaction-friend-tag.entity';
 import { SettlementLink } from './entities/settlement-link.entity';
 import { Category } from './entities/category.entity';
+import { Subscription } from './entities/subscription.entity';
 
 const AppDataSource = new DataSource({
   type: 'postgres',
   url: process.env.DATABASE_URL,
-  entities: [Transaction, StatementImport, Account, Friend, TransactionFriendTag, SettlementLink, Category],
+  entities: [
+    Transaction,
+    StatementImport,
+    Account,
+    Friend,
+    TransactionFriendTag,
+    SettlementLink,
+    Category,
+    Subscription,
+  ],
   migrations: [path.join(__dirname, 'migrations/*.{ts,js}')],
   synchronize: false,
 });
