@@ -7,6 +7,12 @@ import { Account } from '../database/entities/account.entity';
 import { ParsedEntry } from './parsers/hdfc.parser';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
 
+function isoDateMinusDays(isoDate: string, days: number): string {
+  const d = new Date(isoDate + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 function normalizeDateOnly(value: string | Date | null | undefined): string | null {
   if (!value) return null;
   if (value instanceof Date) {
@@ -137,6 +143,16 @@ export class ImportsService {
     const periodStart = sortedEntries.length > 0 ? sortedEntries[0].transactionDateIso : null;
     const periodEnd =
       sortedEntries.length > 0 ? sortedEntries[sortedEntries.length - 1].transactionDateIso : null;
+
+    if (lastDate && periodStart) {
+      const cutoff = isoDateMinusDays(lastDate, 2);
+      if (periodStart > cutoff) {
+        const acctLabel = accountKey !== 'unknown' ? ` for account ${accountKey}` : '';
+        throw new BadRequestException(
+          `Statement starts on ${periodStart}, but${acctLabel} the last recorded transaction is ${lastDate}. Upload a statement starting on or before ${cutoff} to ensure continuity.`,
+        );
+      }
+    }
 
     return { accountKey, lastDate, filtered, periodStart, periodEnd };
   }
