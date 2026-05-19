@@ -9,6 +9,10 @@ import { TransactionFriendTag } from './entities/transaction-friend-tag.entity';
 import { SettlementLink } from './entities/settlement-link.entity';
 import { Category } from './entities/category.entity';
 import { Subscription } from './entities/subscription.entity';
+import { Card } from './entities/card.entity';
+import { CardStatement } from './entities/card-statement.entity';
+import { CardTransaction } from './entities/card-transaction.entity';
+import { CardPayment } from './entities/card-payment.entity';
 
 const AppDataSource = new DataSource({
   type: 'postgres',
@@ -22,6 +26,10 @@ const AppDataSource = new DataSource({
     SettlementLink,
     Category,
     Subscription,
+    Card,
+    CardStatement,
+    CardTransaction,
+    CardPayment,
   ],
   migrations: [path.join(__dirname, 'migrations/*.{ts,js}')],
   synchronize: false,

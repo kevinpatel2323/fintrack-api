@@ -10,11 +10,16 @@ import { TransactionFriendTag } from './database/entities/transaction-friend-tag
 import { SettlementLink } from './database/entities/settlement-link.entity';
 import { Category } from './database/entities/category.entity';
 import { Subscription } from './database/entities/subscription.entity';
+import { Card } from './database/entities/card.entity';
+import { CardStatement } from './database/entities/card-statement.entity';
+import { CardTransaction } from './database/entities/card-transaction.entity';
+import { CardPayment } from './database/entities/card-payment.entity';
 import { FriendsModule } from './friends/friends.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { CategoriesModule } from './categories/categories.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { CardsModule } from './cards/cards.module';
 
 @Module({
   imports: [
@@ -33,6 +38,10 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
         SettlementLink,
         Category,
         Subscription,
+        Card,
+        CardStatement,
+        CardTransaction,
+        CardPayment,
       ],
       synchronize: false,
     }),
@@ -42,6 +51,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
     CategoriesModule,
     DashboardModule,
     SubscriptionsModule,
+    CardsModule,
   ],
 })
 export class AppModule {}
