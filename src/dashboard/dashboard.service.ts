@@ -425,7 +425,7 @@ export class DashboardService {
       accountNumber,
     );
     const friendBalances = await this.computeFriendBalances();
-    const monthlyTrends = await this.computeMonthlyTrends(6, accountNumber);
+    const monthlyTrends = await this.computeMonthlyTrends(12, accountNumber);
     const accountSummary = await this.computeAccountSummary();
     const topCategories = await this.computeTopCategories(
       startDate,

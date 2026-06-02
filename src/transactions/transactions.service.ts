@@ -77,6 +77,17 @@ export class TransactionsService {
     return { ...rest, accountNumber: loadedAccount?.accountNumber ?? null };
   }
 
+  async getTransactionById(transactionId: string) {
+    const row = await this.transactionsRepository.findOne({
+      where: { id: transactionId },
+      relations: ['account', 'category'],
+    });
+    if (!row) throw new NotFoundException('Transaction not found.');
+
+    const { account, accountId, ...rest } = row;
+    return { ...rest, accountNumber: account?.accountNumber ?? null };
+  }
+
   async setTransactionCategory(
     transactionId: string,
     categoryId: string | null,

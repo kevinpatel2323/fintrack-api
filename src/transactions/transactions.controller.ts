@@ -30,6 +30,12 @@ export class TransactionsController {
     return this.transactionsService.createManualTransaction(dto);
   }
 
+  @Get(':id')
+  async getById(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.transactionsService.getTransactionById(String(id));
+    return { data };
+  }
+
   @Patch(':id/category')
   async setCategory(
     @Param('id', ParseIntPipe) id: number,
