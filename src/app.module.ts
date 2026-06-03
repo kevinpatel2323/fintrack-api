@@ -44,42 +44,39 @@ import { CardsModule } from './cards/cards.module';
         CardPayment,
       ],
       synchronize: false,
-      // Reuse the DataSource across warm serverless invocations rather than
-      // tearing it down (and reconnecting) on every Nest lifecycle close.
-      keepConnectionAlive: true,
-      // This API runs as Vercel serverless functions. DATABASE_URL must point at
-      // the Supabase *transaction-mode* pooler (port 6543), NOT session mode
-      // (port 5432). Session mode pins one Postgres backend per client for the
-      // lifetime of the connection and caps total clients at pool_size: 15, so a
-      // handful of cold-started serverless instances (each opening its own pool)
-      // exhaust it within seconds — every request then fails with
-      // "(EMAXCONNSESSION) max clients reached in session mode", surfacing as
-      // TypeORM "Unable to connect to the database" and 500s across all APIs.
-      // Transaction mode releases the backend at the end of each transaction and
-      // multiplexes many clients over a small backend pool, which is what
-      // serverless needs, and only supports unnamed prepared statements — which
-      // is what node-postgres/TypeORM use by default here.
+      // DATABASE_URL must point at the Supabase *transaction-mode* pooler
+      // (port 6543), NOT session mode (port 5432). Both share ONE project-wide
+      // ceiling on client connections — session mode caps at 15
+      // ("(EMAXCONNSESSION) max clients reached in session mode"), transaction
+      // mode at 200 ("(EMAXCONN) max client connections reached, limit: 200").
+      // That ceiling is shared across EVERY connection to the project: local
+      // dev, production, migrations and every process restart all draw from it.
+      //
+      // The app kept dying after a few minutes because connections were LEAKED,
+      // not because traffic was high. Do NOT re-add `keepConnectionAlive: true`
+      // here: it tells TypeORM to skip closing the pool on shutdown, so every
+      // `nest --watch` recompile and every production redeploy killed the
+      // process WITHOUT releasing its connections. They lingered at the pooler
+      // until it slowly timed them out, stacking across restarts until the 200
+      // ceiling was hit and new connections were refused — surfacing downstream
+      // as "timeout exceeded when trying to connect". main.ts now calls
+      // enableShutdownHooks() so SIGTERM drains the pool on every restart.
       extra: {
-        // Pool size PER instance (local process or warm serverless function).
-        // max: 1 was an overcorrection from the session-mode incident and is
-        // the cause of the "timeout exceeded when trying to connect" bursts: a
-        // page that fires several parallel queries serialises them onto a single
-        // connection, and the ones left waiting blow past connectionTimeoutMillis
-        // all at once. Transaction mode multiplexes many client connections onto
-        // a small shared backend pool, so a handful per instance is safe (unlike
-        // session mode, which pins one backend per client and caps at 15). Tune
-        // down via DB_POOL_MAX if total client connections ever get tight.
-        max: Number(process.env.DB_POOL_MAX) || 5,
-        // Give slow TLS handshakes to the ap-southeast-1 pooler room to complete
-        // before giving up on acquiring a connection.
+        // Keep each process's footprint small against the shared 200-client
+        // ceiling. Transaction mode multiplexes these onto a small backend pool,
+        // so a handful covers per-request concurrency. Tune via DB_POOL_MAX.
+        max: Number(process.env.DB_POOL_MAX) || 3,
+        // Drop idle connections quickly so an idle process hands its client
+        // slots back to the pooler instead of squatting on them.
+        idleTimeoutMillis: 10000,
+        // Don't let an idle pool keep the process (and its slots) alive.
+        allowExitOnIdle: true,
+        // Give slow TLS handshakes to the ap-southeast-1 pooler room to complete.
         connectionTimeoutMillis: 30000,
-        // Release idle connections so cold/old instances free their slots.
-        idleTimeoutMillis: 30000,
         // Cap any single runaway query.
         statement_timeout: 30000,
         // Keep the TCP socket alive so the pooler/NAT can't silently drop an idle
-        // connection and leave us holding a dead one — the cause of the
-        // intermittent "Connection terminated unexpectedly" / "read ETIMEDOUT".
+        // connection and leave a dead one ("Connection terminated unexpectedly").
         keepAlive: true,
         keepAliveInitialDelayMillis: 10000,
       },
