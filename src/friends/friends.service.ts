@@ -103,6 +103,7 @@ export class FriendsService {
           const links = await this.settlementLinkRepository.find({
             where: { settlementTagId: tag.id },
             relations: ['settledTag', 'settledTag.transaction'],
+            order: { settledTagId: 'ASC' },
           });
           return {
             ...tag,
@@ -114,6 +115,61 @@ export class FriendsService {
     );
 
     return tagsWithLinks;
+  }
+
+  /**
+   * Batch variant of {@link listTransactionTags} for many transactions at once.
+   * Returns a Map of transactionId -> tags[], where each tag matches the exact
+   * shape of listTransactionTags (friend relation, plus settlesTransactions for
+   * SETTLEMENT tags). Runs in a fixed TWO queries regardless of how many
+   * transactions are passed — one for the tags, one for all settlement links —
+   * so the transactions list can render friend tags inline instead of firing
+   * one /transactions/:id/friends request per row (the N+1 flood that exhausted
+   * the Supabase connection pool).
+   */
+  async listTransactionTagsForTransactions(
+    transactionIds: string[],
+  ): Promise<Map<string, any[]>> {
+    const byTransaction = new Map<string, any[]>();
+    if (transactionIds.length === 0) {
+      return byTransaction;
+    }
+
+    const tags = await this.tagRepository.find({
+      where: { transactionId: In(transactionIds) },
+      relations: ['friend', 'transaction'],
+      order: { id: 'ASC' },
+    });
+
+    const settlementTagIds = tags
+      .filter((tag) => tag.direction === TransactionFriendDirection.Settlement)
+      .map((tag) => tag.id);
+
+    const settledTagsByLink = new Map<string, any[]>();
+    if (settlementTagIds.length > 0) {
+      const links = await this.settlementLinkRepository.find({
+        where: { settlementTagId: In(settlementTagIds) },
+        relations: ['settledTag', 'settledTag.transaction'],
+        order: { settledTagId: 'ASC' },
+      });
+      for (const link of links) {
+        const existing = settledTagsByLink.get(link.settlementTagId) ?? [];
+        existing.push(link.settledTag);
+        settledTagsByLink.set(link.settlementTagId, existing);
+      }
+    }
+
+    for (const tag of tags) {
+      const shaped =
+        tag.direction === TransactionFriendDirection.Settlement
+          ? { ...tag, settlesTransactions: settledTagsByLink.get(tag.id) ?? [] }
+          : tag;
+      const existing = byTransaction.get(tag.transactionId) ?? [];
+      existing.push(shaped);
+      byTransaction.set(tag.transactionId, existing);
+    }
+
+    return byTransaction;
   }
 
   async createTransactionTag(transactionId: string, dto: CreateTransactionFriendTagDto) {

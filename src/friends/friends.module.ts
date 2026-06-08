@@ -12,5 +12,6 @@ import { FriendsService } from './friends.service';
   imports: [TypeOrmModule.forFeature([Friend, TransactionFriendTag, SettlementLink, Transaction])],
   controllers: [FriendsController, TransactionFriendsController],
   providers: [FriendsService],
+  exports: [FriendsService],
 })
 export class FriendsModule {}

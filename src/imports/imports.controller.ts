@@ -15,10 +15,14 @@ import { ImportsService } from './imports.service';
 import { parseHdfcStatement } from './parsers/hdfc.parser';
 import { ImportsListQueryDto } from './dto/imports-list.dto';
 import { TransactionsRangeQueryDto } from './dto/transactions-range.dto';
+import { FriendsService } from '../friends/friends.service';
 
 @Controller('imports')
 export class ImportsController {
-  constructor(private readonly importsService: ImportsService) {}
+  constructor(
+    private readonly importsService: ImportsService,
+    private readonly friendsService: FriendsService,
+  ) {}
 
   private mapImport(importRow: any) {
     if (!importRow) return importRow;
@@ -90,9 +94,20 @@ export class ImportsController {
       query.end,
       query.accountNumber,
     );
+    // Load every transaction's friend tags inline (fixed two queries) so the
+    // web client can render the Tags column from this single response instead
+    // of firing one /transactions/:id/friends request per row.
+    const tagsByTransaction =
+      await this.friendsService.listTransactionTagsForTransactions(
+        data.map((row) => row.id),
+      );
     const mapped = data.map((row: any) => {
       const { account, accountId, ...rest } = row;
-      return { ...rest, accountNumber: account?.accountNumber ?? null };
+      return {
+        ...rest,
+        accountNumber: account?.accountNumber ?? null,
+        friendTags: tagsByTransaction.get(row.id) ?? [],
+      };
     });
     return { count: mapped.length, data: mapped };
   }
