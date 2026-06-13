@@ -1,10 +1,19 @@
 import 'reflect-metadata';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Security headers + cookie parsing (SessionGuard reads req.cookies). Trust
+  // the first proxy hop so req.ip / rate-limiting see the real client behind
+  // Vercel's edge rather than the proxy address.
+  app.use(helmet());
+  app.use(cookieParser());
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
   // Drain the TypeORM connection pool on SIGTERM/SIGINT so every restart
   // (nest --watch recompiles, production redeploys) releases its connections
   // back to the Supabase pooler instead of leaking them toward the shared

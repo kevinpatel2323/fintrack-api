@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ImportsModule } from './imports/imports.module';
 import { Transaction } from './database/entities/transaction.entity';
 import { StatementImport } from './database/entities/statement-import.entity';
@@ -14,18 +16,25 @@ import { Card } from './database/entities/card.entity';
 import { CardStatement } from './database/entities/card-statement.entity';
 import { CardTransaction } from './database/entities/card-transaction.entity';
 import { CardPayment } from './database/entities/card-payment.entity';
+import { WebauthnCredential } from './database/entities/webauthn-credential.entity';
+import { AuthSession } from './database/entities/auth-session.entity';
+import { WebauthnChallenge } from './database/entities/webauthn-challenge.entity';
 import { FriendsModule } from './friends/friends.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { CategoriesModule } from './categories/categories.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { CardsModule } from './cards/cards.module';
+import { AuthModule } from './auth/auth.module';
+import { SessionGuard } from './auth/session.guard';
+import { OriginCsrfGuard } from './auth/origin-csrf.guard';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: process.env.DATABASE_URL,
@@ -42,6 +51,9 @@ import { CardsModule } from './cards/cards.module';
         CardStatement,
         CardTransaction,
         CardPayment,
+        WebauthnCredential,
+        AuthSession,
+        WebauthnChallenge,
       ],
       synchronize: false,
       // DATABASE_URL must point at the Supabase *transaction-mode* pooler
@@ -88,6 +100,14 @@ import { CardsModule } from './cards/cards.module';
     DashboardModule,
     SubscriptionsModule,
     CardsModule,
+    AuthModule,
+  ],
+  // Global guards run in registration order: rate-limit first, then reject
+  // forged cross-origin mutations, then require a session (unless @Public).
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: OriginCsrfGuard },
+    { provide: APP_GUARD, useClass: SessionGuard },
   ],
 })
 export class AppModule {}
