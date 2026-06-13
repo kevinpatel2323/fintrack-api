@@ -71,7 +71,8 @@ src/
 | DELETE | `/transactions/:txId/tags/:tagId` | Delete tag (cascades settlement links) |
 
 ### Categories (`/categories`)
-CRUD at `/categories`. `name` must be unique. Deletion is unrestricted (transactions keep `category_id = NULL`).
+CRUD at `/categories`. `name` must be unique. Deletion is unrestricted (transactions keep `category_id = NULL`).  
+`GET /categories/:id/export?start=&end=` streams the category's transactions as a CSV download (`text/csv`, UTF-8 BOM). Both date bounds are optional — omit them to export every transaction in the category.
 
 ### Dashboard (`/dashboard`)
 All endpoints are read-only. Accept optional `?startDate=&endDate=&accountNumber=`.

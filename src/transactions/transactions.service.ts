@@ -77,6 +77,30 @@ export class TransactionsService {
     return { ...rest, accountNumber: loadedAccount?.accountNumber ?? null };
   }
 
+  async getCategoryTransactionsForExport(
+    categoryId: string,
+    start?: string,
+    end?: string,
+  ): Promise<{ category: Category; transactions: Transaction[] }> {
+    const category = await this.categoriesRepository.findOne({ where: { id: categoryId } });
+    if (!category) throw new NotFoundException('Category not found.');
+
+    const query = this.transactionsRepository
+      .createQueryBuilder('t')
+      .leftJoinAndSelect('t.account', 'account')
+      .where('t.category_id = :categoryId', { categoryId });
+
+    if (start) query.andWhere('t.transaction_date >= :start', { start });
+    if (end) query.andWhere('t.transaction_date <= :end', { end });
+
+    const transactions = await query
+      .orderBy('t.transaction_date', 'ASC')
+      .addOrderBy('t.id', 'ASC')
+      .getMany();
+
+    return { category, transactions };
+  }
+
   async getTransactionById(transactionId: string) {
     const row = await this.transactionsRepository.findOne({
       where: { id: transactionId },
