@@ -16,6 +16,7 @@ import { Card } from './database/entities/card.entity';
 import { CardStatement } from './database/entities/card-statement.entity';
 import { CardTransaction } from './database/entities/card-transaction.entity';
 import { CardPayment } from './database/entities/card-payment.entity';
+import { CardStatementImport } from './database/entities/card-statement-import.entity';
 import { WebauthnCredential } from './database/entities/webauthn-credential.entity';
 import { AuthSession } from './database/entities/auth-session.entity';
 import { WebauthnChallenge } from './database/entities/webauthn-challenge.entity';
@@ -51,6 +52,7 @@ import { OriginCsrfGuard } from './auth/origin-csrf.guard';
         CardStatement,
         CardTransaction,
         CardPayment,
+        CardStatementImport,
         WebauthnCredential,
         AuthSession,
         WebauthnChallenge,

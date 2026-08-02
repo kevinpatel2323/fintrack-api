@@ -11,8 +11,9 @@ import {
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { CreateManualTransactionDto } from './dto/create-manual-transaction.dto';
-import { IsNumber, IsPositive } from 'class-validator';
+import { ArrayNotEmpty, IsArray, IsNumber, IsPositive } from 'class-validator';
 import { Type } from 'class-transformer';
+import { CardLinkService } from '../cards/card-link.service';
 
 class SetCategoryDto {
   @Type(() => Number)
@@ -21,9 +22,49 @@ class SetCategoryDto {
   categoryId!: number;
 }
 
+class LinkCcBillPaymentDto {
+  @Type(() => Number)
+  @IsNumber()
+  @IsPositive()
+  cardId!: number;
+
+  @IsArray()
+  @ArrayNotEmpty()
+  @Type(() => Number)
+  @IsNumber({}, { each: true })
+  @IsPositive({ each: true })
+  cardTransactionIds!: number[];
+}
+
 @Controller('transactions')
 export class TransactionsController {
-  constructor(private readonly transactionsService: TransactionsService) {}
+  constructor(
+    private readonly transactionsService: TransactionsService,
+    private readonly cardLinkService: CardLinkService,
+  ) {}
+
+  // ── CC bill payment linking ──────────────────────────────────────────────
+  @Get(':id/cc-link')
+  async getCcLink(@Param('id', ParseIntPipe) id: number) {
+    return this.cardLinkService.getLink(String(id));
+  }
+
+  @Post(':id/cc-link')
+  async linkCcBillPayment(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: LinkCcBillPaymentDto,
+  ) {
+    return this.cardLinkService.link(
+      String(id),
+      String(dto.cardId),
+      dto.cardTransactionIds.map(String),
+    );
+  }
+
+  @Delete(':id/cc-link')
+  async unlinkCcBillPayment(@Param('id', ParseIntPipe) id: number) {
+    return this.cardLinkService.unlink(String(id));
+  }
 
   @Post('manual')
   async createManual(@Body() dto: CreateManualTransactionDto) {

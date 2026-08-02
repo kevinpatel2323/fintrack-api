@@ -5,6 +5,7 @@ import { Account } from '../database/entities/account.entity';
 import { Friend } from '../database/entities/friend.entity';
 import { Category } from '../database/entities/category.entity';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
+import { CardTransaction } from '../database/entities/card-transaction.entity';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
 
@@ -16,6 +17,7 @@ import { DashboardService } from './dashboard.service';
       Friend,
       Category,
       TransactionFriendTag,
+      CardTransaction,
     ]),
   ],
   controllers: [DashboardController],

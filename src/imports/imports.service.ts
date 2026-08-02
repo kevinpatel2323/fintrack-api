@@ -6,6 +6,7 @@ import { StatementImport } from '../database/entities/statement-import.entity';
 import { Account } from '../database/entities/account.entity';
 import { ParsedEntry } from './parsers/hdfc.parser';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
+import { CardLinkService } from '../cards/card-link.service';
 
 function isoDateMinusDays(isoDate: string, days: number): string {
   const d = new Date(isoDate + 'T12:00:00Z');
@@ -44,6 +45,7 @@ export class ImportsService {
     @InjectRepository(Account)
     private readonly accountsRepository: Repository<Account>,
     private readonly dataSource: DataSource,
+    private readonly cardLinkService: CardLinkService,
   ) {}
 
   async getLastImport(accountNumber?: string | null): Promise<StatementImport | null> {
@@ -260,7 +262,16 @@ export class ImportsService {
       }
 
       let removedTags = 0;
+      let removedCcLinks = 0;
       if (transactionIds.length > 0) {
+        // Bill payments referencing these transactions must be unlinked first:
+        // the FK is ON DELETE RESTRICT, and unlinking also restores the covered
+        // card transactions to unpaid.
+        removedCcLinks = await this.cardLinkService.unlinkByBankTransactionIds(
+          queryRunner.manager,
+          transactionIds,
+        );
+
         const deletedTags = await queryRunner.manager
           .createQueryBuilder()
           .delete()
@@ -285,6 +296,7 @@ export class ImportsService {
         importId,
         removedTransactions: transactionIds.length,
         removedFriendTags: removedTags,
+        removedCcLinks,
       };
     } catch (error) {
       await queryRunner.rollbackTransaction();

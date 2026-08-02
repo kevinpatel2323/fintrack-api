@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,8 +9,12 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { CardsService } from './cards.service';
+import { CardImportsService } from './card-imports.service';
 import { CreateCardDto } from './dto/create-card.dto';
 import { UpdateCardDto } from './dto/update-card.dto';
 import {
@@ -28,7 +33,47 @@ import {
 
 @Controller('cards')
 export class CardsController {
-  constructor(private readonly cardsService: CardsService) {}
+  constructor(
+    private readonly cardsService: CardsService,
+    private readonly cardImportsService: CardImportsService,
+  ) {}
+
+  // ── CC statement imports ─────────────────────────────────────────────────
+  @Post(':id/imports/hdfc-cc/preview')
+  @UseInterceptors(FileInterceptor('statement'))
+  async previewCcImport(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Missing file: statement');
+    return this.cardImportsService.preview(String(id), file.buffer);
+  }
+
+  @Post(':id/imports/hdfc-cc')
+  @UseInterceptors(FileInterceptor('statement'))
+  async importCc(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file) throw new BadRequestException('Missing file: statement');
+    const result = await this.cardImportsService.importStatement(
+      String(id),
+      file.buffer,
+      file.originalname,
+    );
+    return { message: 'Import complete', ...result };
+  }
+
+  @Get(':id/imports')
+  async listCcImports(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.cardImportsService.listImports(String(id));
+    return { count: data.length, data };
+  }
+
+  @Post('imports/:importId/revert')
+  async revertCcImport(@Param('importId', ParseIntPipe) importId: number) {
+    return this.cardImportsService.revertImport(String(importId));
+  }
 
   // ── Wallet / dues ──────────────────────────────────────────────────────
   @Get('wallet')
@@ -99,11 +144,13 @@ export class CardsController {
     @Query('start') start?: string,
     @Query('end') end?: string,
     @Query('statementId') statementId?: string,
+    @Query('unpaid') unpaid?: string,
   ) {
     const data = await this.cardsService.listTransactions(String(id), {
       start,
       end,
       statementId,
+      unpaid: unpaid === 'true',
     });
     return { count: data.length, data };
   }

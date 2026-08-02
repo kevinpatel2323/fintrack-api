@@ -16,12 +16,14 @@ import { parseHdfcStatement } from './parsers/hdfc.parser';
 import { ImportsListQueryDto } from './dto/imports-list.dto';
 import { TransactionsRangeQueryDto } from './dto/transactions-range.dto';
 import { FriendsService } from '../friends/friends.service';
+import { CardLinkService } from '../cards/card-link.service';
 
 @Controller('imports')
 export class ImportsController {
   constructor(
     private readonly importsService: ImportsService,
     private readonly friendsService: FriendsService,
+    private readonly cardLinkService: CardLinkService,
   ) {}
 
   private mapImport(importRow: any) {
@@ -97,9 +99,16 @@ export class ImportsController {
     // Load every transaction's friend tags inline (fixed two queries) so the
     // web client can render the Tags column from this single response instead
     // of firing one /transactions/:id/friends request per row.
+    const transactionIds = data.map((row) => row.id);
     const tagsByTransaction =
       await this.friendsService.listTransactionTagsForTransactions(
-        data.map((row) => row.id),
+        transactionIds,
+      );
+    // Annotate bill-payment rows (fixed extra query, same pattern as tags) so
+    // the list UI can render the "CC bill" badge and hide the mark action.
+    const ccByTransaction =
+      await this.cardLinkService.getBillPaymentsForBankTransactions(
+        transactionIds,
       );
     const mapped = data.map((row: any) => {
       const { account, accountId, ...rest } = row;
@@ -107,6 +116,7 @@ export class ImportsController {
         ...rest,
         accountNumber: account?.accountNumber ?? null,
         friendTags: tagsByTransaction.get(row.id) ?? [],
+        ccBillPayment: ccByTransaction.get(row.id) ?? null,
       };
     });
     return { count: mapped.length, data: mapped };

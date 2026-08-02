@@ -301,7 +301,7 @@ export class CardsService {
   // ── Card transactions ────────────────────────────────────────────────────
   async listTransactions(
     cardId: string,
-    opts: { start?: string; end?: string; statementId?: string },
+    opts: { start?: string; end?: string; statementId?: string; unpaid?: boolean },
   ): Promise<CardTransaction[]> {
     await this.assertCardExists(cardId);
     const qb = this.txnsRepo
@@ -317,6 +317,7 @@ export class CardsService {
       qb.andWhere('t.statement_id = :statementId', {
         statementId: opts.statementId,
       });
+    if (opts.unpaid) qb.andWhere('t.paid_by_payment_id IS NULL');
     return qb.getMany();
   }
 
@@ -353,6 +354,14 @@ export class CardsService {
   ): Promise<CardTransaction> {
     const txn = await this.txnsRepo.findOne({ where: { id: txnId } });
     if (!txn) throw new NotFoundException('Card transaction not found.');
+    if (
+      txn.paidByPaymentId !== null &&
+      (dto.amount !== undefined || dto.isRefund !== undefined)
+    ) {
+      throw new BadRequestException(
+        'This transaction is covered by a bill payment; its amount cannot change. Unlink the payment first.',
+      );
+    }
     if (dto.categoryId) await this.assertCategoryExists(dto.categoryId);
     if (dto.statementId)
       await this.assertStatementBelongsToCard(dto.statementId, txn.cardId);
@@ -384,6 +393,11 @@ export class CardsService {
   ): Promise<{ deleted: boolean; id: string }> {
     const txn = await this.txnsRepo.findOne({ where: { id: txnId } });
     if (!txn) throw new NotFoundException('Card transaction not found.');
+    if (txn.paidByPaymentId !== null) {
+      throw new BadRequestException(
+        'This transaction is covered by a bill payment. Unlink the payment first.',
+      );
+    }
     const statementId = txn.statementId;
     await this.dataSource.transaction(async (em) => {
       await em.delete(CardTransaction, { id: txnId });

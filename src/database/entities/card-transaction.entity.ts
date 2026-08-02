@@ -9,6 +9,8 @@ import {
 } from 'typeorm';
 import { Card } from './card.entity';
 import { CardStatement } from './card-statement.entity';
+import { CardPayment } from './card-payment.entity';
+import { CardStatementImport } from './card-statement-import.entity';
 import { Category } from './category.entity';
 
 const numericTransformer = {
@@ -57,6 +59,22 @@ export class CardTransaction {
 
   @Column({ name: 'is_refund', type: 'boolean', default: false })
   isRefund!: boolean;
+
+  @Index()
+  @Column({ name: 'paid_by_payment_id', type: 'bigint', nullable: true })
+  paidByPaymentId!: string | null;
+
+  @ManyToOne(() => CardPayment, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'paid_by_payment_id' })
+  paidByPayment?: CardPayment | null;
+
+  @Index()
+  @Column({ name: 'card_import_id', type: 'bigint', nullable: true })
+  cardImportId!: string | null;
+
+  @ManyToOne(() => CardStatementImport, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'card_import_id' })
+  cardImport?: CardStatementImport | null;
 
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
