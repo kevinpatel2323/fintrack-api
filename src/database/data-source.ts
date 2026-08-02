@@ -13,6 +13,7 @@ import { Card } from './entities/card.entity';
 import { CardStatement } from './entities/card-statement.entity';
 import { CardTransaction } from './entities/card-transaction.entity';
 import { CardPayment } from './entities/card-payment.entity';
+import { CardStatementImport } from './entities/card-statement-import.entity';
 import { WebauthnCredential } from './entities/webauthn-credential.entity';
 import { AuthSession } from './entities/auth-session.entity';
 import { WebauthnChallenge } from './entities/webauthn-challenge.entity';
@@ -33,6 +34,7 @@ const AppDataSource = new DataSource({
     CardStatement,
     CardTransaction,
     CardPayment,
+    CardStatementImport,
     WebauthnCredential,
     AuthSession,
     WebauthnChallenge,

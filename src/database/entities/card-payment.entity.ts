@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Card } from './card.entity';
 import { CardStatement } from './card-statement.entity';
+import { Transaction } from './transaction.entity';
 
 const numericTransformer = {
   to: (value: number) => value,
@@ -45,6 +46,14 @@ export class CardPayment {
 
   @Column({ name: 'via_label', type: 'text', nullable: true })
   viaLabel!: string | null;
+
+  @Index({ unique: true, where: 'bank_transaction_id IS NOT NULL' })
+  @Column({ name: 'bank_transaction_id', type: 'bigint', nullable: true })
+  bankTransactionId!: string | null;
+
+  @ManyToOne(() => Transaction, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'bank_transaction_id' })
+  bankTransaction?: Transaction | null;
 
   @Column({ type: 'text', nullable: true })
   notes!: string | null;

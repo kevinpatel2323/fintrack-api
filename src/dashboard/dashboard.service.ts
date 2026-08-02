@@ -6,6 +6,13 @@ import { Account } from '../database/entities/account.entity';
 import { Friend } from '../database/entities/friend.entity';
 import { Category } from '../database/entities/category.entity';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
+import { CardTransaction } from '../database/entities/card-transaction.entity';
+
+// A bank withdrawal linked to a CardPayment is a credit-card bill payment:
+// the real expenses are the covered card transactions, so counting the bill
+// too would double-count. Deposits are never affected (bill payments are
+// withdrawal-only rows).
+const NOT_CC_BILL_PAYMENT = `NOT EXISTS (SELECT 1 FROM card_payments cp WHERE cp.bank_transaction_id = t.id)`;
 
 @Injectable()
 export class DashboardService {
@@ -20,7 +27,78 @@ export class DashboardService {
     private readonly categoriesRepository: Repository<Category>,
     @InjectRepository(TransactionFriendTag)
     private readonly tagsRepository: Repository<TransactionFriendTag>,
+    @InjectRepository(CardTransaction)
+    private readonly cardTxnsRepository: Repository<CardTransaction>,
   ) {}
+
+  // ── Card-transaction aggregates (merged into bank aggregates below) ──────
+  // Card transactions replace the excluded bill payments as the real expenses.
+  // They belong to no bank account, so every caller skips them when an
+  // accountNumber filter is active.
+
+  private cardSpendQuery(startDate?: string, endDate?: string) {
+    const qb = this.cardTxnsRepository.createQueryBuilder('ct');
+    if (startDate) qb.andWhere('ct.txn_date >= :startDate', { startDate });
+    if (endDate) qb.andWhere('ct.txn_date <= :endDate', { endDate });
+    return qb;
+  }
+
+  private async sumCardSpend(
+    startDate?: string,
+    endDate?: string,
+  ): Promise<{ totalSpent: number; transactionCount: number }> {
+    const row = await this.cardSpendQuery(startDate, endDate)
+      .select(
+        'COALESCE(SUM(CASE WHEN ct.is_refund THEN -ct.amount ELSE ct.amount END), 0)',
+        'totalSpent',
+      )
+      .addSelect('COUNT(*)', 'transactionCount')
+      .getRawOne();
+    return {
+      totalSpent: Number(row?.totalSpent ?? 0),
+      transactionCount: Number(row?.transactionCount ?? 0),
+    };
+  }
+
+  private async cardSpendByCategory(startDate?: string, endDate?: string) {
+    return this.cardSpendQuery(startDate, endDate)
+      .leftJoin('ct.category', 'c')
+      .select('ct.category_id', 'categoryId')
+      .addSelect('c.name', 'categoryName')
+      .addSelect('c.color', 'categoryColor')
+      .addSelect(
+        'COALESCE(SUM(CASE WHEN ct.is_refund THEN -ct.amount ELSE ct.amount END), 0)',
+        'totalAmount',
+      )
+      .addSelect('COUNT(*)', 'transactionCount')
+      .groupBy('ct.category_id, c.name, c.color')
+      .getRawMany();
+  }
+
+  private async cardSpendByMonth(
+    months: string[],
+  ): Promise<Map<string, { totalSpent: number; transactionCount: number }>> {
+    const rows = await this.cardTxnsRepository
+      .createQueryBuilder('ct')
+      .select(`TO_CHAR(ct.txn_date, 'YYYY-MM')`, 'month')
+      .addSelect(
+        'COALESCE(SUM(CASE WHEN ct.is_refund THEN -ct.amount ELSE ct.amount END), 0)',
+        'totalSpent',
+      )
+      .addSelect('COUNT(*)', 'transactionCount')
+      .where(`TO_CHAR(ct.txn_date, 'YYYY-MM') IN (:...months)`, { months })
+      .groupBy('month')
+      .getRawMany();
+    return new Map(
+      rows.map((row) => [
+        row.month,
+        {
+          totalSpent: Number(row.totalSpent),
+          transactionCount: Number(row.transactionCount),
+        },
+      ]),
+    );
+  }
 
   async computeSpendingOverview(
     startDate?: string,
@@ -32,7 +110,8 @@ export class DashboardService {
       .createQueryBuilder('t')
       .select('COALESCE(SUM(t.withdrawal), 0)', 'totalSpent')
       .addSelect('COALESCE(SUM(t.deposit), 0)', 'totalIncome')
-      .addSelect('COUNT(*)', 'transactionCount');
+      .addSelect('COUNT(*)', 'transactionCount')
+      .where(NOT_CC_BILL_PAYMENT);
 
     if (startDate) {
       currentQuery.andWhere('t.transaction_date >= :startDate', { startDate });
@@ -78,7 +157,8 @@ export class DashboardService {
         .createQueryBuilder('t')
         .select('COALESCE(SUM(t.withdrawal), 0)', 'totalSpent')
         .addSelect('COALESCE(SUM(t.deposit), 0)', 'totalIncome')
-        .where('t.transaction_date >= :compStartDate', { compStartDate })
+        .where(NOT_CC_BILL_PAYMENT)
+        .andWhere('t.transaction_date >= :compStartDate', { compStartDate })
         .andWhere('t.transaction_date <= :compEndDate', { compEndDate });
 
       if (accountNumber) {
@@ -93,9 +173,19 @@ export class DashboardService {
     }
 
     // Step 4: Calculate derived metrics
-    const totalSpent = Number(current.totalSpent);
+    let totalSpent = Number(current.totalSpent);
     const totalIncome = Number(current.totalIncome);
-    const transactionCount = Number(current.transactionCount);
+    let transactionCount = Number(current.transactionCount);
+
+    if (!accountNumber) {
+      const cardSpend = await this.sumCardSpend(startDate, endDate);
+      totalSpent += cardSpend.totalSpent;
+      transactionCount += cardSpend.transactionCount;
+      if (compStartDate && compEndDate) {
+        const compCardSpend = await this.sumCardSpend(compStartDate, compEndDate);
+        compTotalSpent += compCardSpend.totalSpent;
+      }
+    }
 
     const percentageChange =
       compTotalSpent > 0
@@ -135,6 +225,7 @@ export class DashboardService {
       .addSelect('COALESCE(SUM(t.withdrawal), 0)', 'totalAmount')
       .addSelect('COUNT(*)', 'transactionCount')
       .andWhere('t.withdrawal > 0') // Only expenses
+      .andWhere(NOT_CC_BILL_PAYMENT)
       .groupBy('t.category_id, c.name, c.color')
       .orderBy('SUM(t.withdrawal)', 'DESC');
 
@@ -151,6 +242,25 @@ export class DashboardService {
     }
 
     const results = await query.getRawMany();
+
+    // Fold card-transaction spend into the same category buckets.
+    if (!accountNumber) {
+      const cardRows = await this.cardSpendByCategory(startDate, endDate);
+      for (const cardRow of cardRows) {
+        const existing = results.find(
+          (row) => String(row.categoryId) === String(cardRow.categoryId),
+        );
+        if (existing) {
+          existing.totalAmount =
+            Number(existing.totalAmount) + Number(cardRow.totalAmount);
+          existing.transactionCount =
+            Number(existing.transactionCount) + Number(cardRow.transactionCount);
+        } else {
+          results.push(cardRow);
+        }
+      }
+      results.sort((a, b) => Number(b.totalAmount) - Number(a.totalAmount));
+    }
 
     // Step 2: Calculate total spent
     const totalSpent = results.reduce(
@@ -259,6 +369,7 @@ export class DashboardService {
       .where(`TO_CHAR(t.transaction_date, 'YYYY-MM') IN (:...months)`, {
         months,
       })
+      .andWhere(NOT_CC_BILL_PAYMENT)
       .groupBy('month')
       .orderBy('month', 'ASC');
 
@@ -276,12 +387,20 @@ export class DashboardService {
       dataMap.set(row.month, row);
     }
 
+    const cardByMonth = accountNumber
+      ? new Map<string, { totalSpent: number; transactionCount: number }>()
+      : await this.cardSpendByMonth(months);
+
     // Step 4: Build complete trends array including zero-transaction months
     const trends = months.map((month) => {
       const data = dataMap.get(month);
-      const totalSpent = data ? Number(data.totalSpent) : 0;
+      const cardData = cardByMonth.get(month);
+      const totalSpent =
+        (data ? Number(data.totalSpent) : 0) + (cardData?.totalSpent ?? 0);
       const totalIncome = data ? Number(data.totalIncome) : 0;
-      const transactionCount = data ? Number(data.transactionCount) : 0;
+      const transactionCount =
+        (data ? Number(data.transactionCount) : 0) +
+        (cardData?.transactionCount ?? 0);
 
       // Step 5: Format month labels (e.g., "Jan 2024")
       const date = new Date(month + '-01');
@@ -372,7 +491,8 @@ export class DashboardService {
     const query = this.transactionsRepository
       .createQueryBuilder('t')
       .select('COALESCE(SUM(t.deposit), 0)', 'totalIncome')
-      .addSelect('COALESCE(SUM(t.withdrawal), 0)', 'totalExpenses');
+      .addSelect('COALESCE(SUM(t.withdrawal), 0)', 'totalExpenses')
+      .where(NOT_CC_BILL_PAYMENT);
 
     if (startDate) {
       query.andWhere('t.transaction_date >= :startDate', { startDate });
@@ -390,7 +510,11 @@ export class DashboardService {
 
     // Step 2: Calculate derived metrics
     const totalIncome = Number(result.totalIncome);
-    const totalExpenses = Number(result.totalExpenses);
+    let totalExpenses = Number(result.totalExpenses);
+    if (!accountNumber) {
+      const cardSpend = await this.sumCardSpend(startDate, endDate);
+      totalExpenses += cardSpend.totalSpent;
+    }
     const netSavings = totalIncome - totalExpenses;
     const savingsRate =
       totalIncome > 0 ? (netSavings / totalIncome) * 100 : 0;
