@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -11,7 +12,13 @@ import {
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { CreateManualTransactionDto } from './dto/create-manual-transaction.dto';
-import { ArrayNotEmpty, IsArray, IsNumber, IsPositive } from 'class-validator';
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsNumber,
+  IsPositive,
+  ValidateIf,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { CardLinkService } from '../cards/card-link.service';
 
@@ -22,18 +29,28 @@ class SetCategoryDto {
   categoryId!: number;
 }
 
+// Exactly one selector: a whole statement (the common case — you pay the bill)
+// or a hand-picked set of card transactions. `@ValidateIf` makes each field
+// required only when the other is absent, so supplying neither fails both.
 class LinkCcBillPaymentDto {
   @Type(() => Number)
   @IsNumber()
   @IsPositive()
   cardId!: number;
 
+  @ValidateIf((dto: LinkCcBillPaymentDto) => dto.cardTransactionIds === undefined)
+  @Type(() => Number)
+  @IsNumber()
+  @IsPositive()
+  statementId?: number;
+
+  @ValidateIf((dto: LinkCcBillPaymentDto) => dto.statementId === undefined)
   @IsArray()
   @ArrayNotEmpty()
   @Type(() => Number)
   @IsNumber({}, { each: true })
   @IsPositive({ each: true })
-  cardTransactionIds!: number[];
+  cardTransactionIds?: number[];
 }
 
 @Controller('transactions')
@@ -54,10 +71,24 @@ export class TransactionsController {
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: LinkCcBillPaymentDto,
   ) {
+    // @ValidateIf skips both checks when both selectors are present, so the
+    // "supplied both" case has to be rejected here.
+    if (dto.statementId !== undefined && dto.cardTransactionIds !== undefined) {
+      throw new BadRequestException(
+        'Provide either statementId or cardTransactionIds, not both.',
+      );
+    }
+    if (dto.statementId !== undefined) {
+      return this.cardLinkService.linkStatement(
+        String(id),
+        String(dto.cardId),
+        String(dto.statementId),
+      );
+    }
     return this.cardLinkService.link(
       String(id),
       String(dto.cardId),
-      dto.cardTransactionIds.map(String),
+      (dto.cardTransactionIds ?? []).map(String),
     );
   }
 

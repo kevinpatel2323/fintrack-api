@@ -11,7 +11,11 @@ import { CardStatement } from '../database/entities/card-statement.entity';
 import { CardStatementImport } from '../database/entities/card-statement-import.entity';
 import { CardTransaction } from '../database/entities/card-transaction.entity';
 import { CardPayment } from '../database/entities/card-payment.entity';
-import { parseHdfcCcStatement, ParsedCcStatement } from './parsers/hdfc-cc.parser';
+import {
+  parseHdfcCcStatement,
+  ParsedCcEntry,
+  ParsedCcStatement,
+} from './parsers/hdfc-cc.parser';
 
 // Statement cycle runs from the day after the previous statement date up to
 // the statement date itself; day-of-month is clamped for short months.
@@ -27,6 +31,22 @@ function cycleStartFor(statementDateIso: string): string {
   const date = new Date(Date.UTC(prevYear, prevMonth - 1, Math.min(d, daysInPrevMonth)));
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString().slice(0, 10);
+}
+
+// Card rows are reshaped into the bank statement's preview row so the unified
+// import screen can render either kind of statement with one code path. A
+// refund puts money back on the card, so it reads as a credit.
+function toPreviewRow(entry: ParsedCcEntry) {
+  return {
+    transactionDate: entry.txnDate,
+    narration: entry.merchant,
+    withdrawal: entry.isRefund ? 0 : entry.amount,
+    deposit: entry.isRefund ? entry.amount : 0,
+    balance: 0,
+    upiName: null,
+    upiDescription: null,
+    upiBank: null,
+  };
 }
 
 @Injectable()
@@ -120,6 +140,69 @@ export class CardImportsService {
         insertedRows: txns.length,
       };
     });
+  }
+
+  // ── Unified import entry points ──────────────────────────────────────────
+  // The import screen accepts any statement, so the card is identified from the
+  // statement itself rather than chosen up front.
+
+  private async resolveCardByLast4(last4: string): Promise<Card> {
+    const matches = await this.cardsRepo.find({ where: { last4, kind: 'credit' } });
+    if (matches.length === 0) {
+      throw new NotFoundException(
+        `This statement is for a credit card ending ${last4}, but no such card exists yet. Add the card first, then import.`,
+      );
+    }
+    if (matches.length > 1) {
+      throw new ConflictException(
+        `${matches.length} credit cards end in ${last4}. Import this statement from the card's own page instead.`,
+      );
+    }
+    return matches[0];
+  }
+
+  private cardSummary(card: Card) {
+    return {
+      id: card.id,
+      name: card.name,
+      nickname: card.nickname,
+      last4: card.last4,
+      network: card.network,
+    };
+  }
+
+  async previewDetected(buffer: Buffer) {
+    const parsed = parseHdfcCcStatement(buffer);
+    const card = await this.resolveCardByLast4(parsed.last4);
+    const alreadyImported = Boolean(
+      await this.findExistingImport(card.id, parsed.statementDate),
+    );
+
+    return {
+      kind: 'card' as const,
+      card: this.cardSummary(card),
+      accountNumber: null,
+      statementDate: parsed.statementDate,
+      dueDate: parsed.dueDate,
+      totalDue: parsed.totalDue,
+      minDue: parsed.minDue,
+      creditLimit: parsed.creditLimit,
+      alreadyImported,
+      totalParsed: parsed.entries.length,
+      willInsert: alreadyImported ? 0 : parsed.entries.length,
+      skippedRows: alreadyImported ? parsed.entries.length : 0,
+      periodStart: cycleStartFor(parsed.statementDate),
+      periodEnd: parsed.statementDate,
+      previewRows: parsed.entries.map(toPreviewRow),
+    };
+  }
+
+  async importDetected(buffer: Buffer, filename: string) {
+    const parsed = parseHdfcCcStatement(buffer);
+    const card = await this.resolveCardByLast4(parsed.last4);
+    const result = await this.importStatement(card.id, buffer, filename);
+
+    return { kind: 'card' as const, card: this.cardSummary(card), ...result };
   }
 
   async listImports(cardId: string): Promise<CardStatementImport[]> {

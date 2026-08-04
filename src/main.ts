@@ -32,6 +32,10 @@ async function bootstrap() {
   );
 
   const port = Number(process.env.PORT || 3000);
+  if (process.env.AUTH_DISABLED?.trim().toLowerCase() === 'true') {
+    // eslint-disable-next-line no-console
+    console.warn('AUTH_DISABLED=true — passkey auth is bypassed');
+  }
   await app.listen(port);
   // eslint-disable-next-line no-console
   console.log(`Server listening on port ${port}`);

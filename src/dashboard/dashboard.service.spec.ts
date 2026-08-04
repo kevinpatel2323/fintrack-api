@@ -7,10 +7,15 @@ import { Account } from '../database/entities/account.entity';
 import { Friend } from '../database/entities/friend.entity';
 import { Category } from '../database/entities/category.entity';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
+import { CardTransaction } from '../database/entities/card-transaction.entity';
+import {
+  cardTransactionsRepoWith,
+  emptyCardTransactionsRepo,
+} from './testing/card-spend.mock';
 
 /**
  * Unit Tests for Dashboard Service
- * 
+ *
  * These tests validate specific examples and edge cases for the spending overview computation.
  */
 describe('DashboardService - Unit Tests', () => {
@@ -51,6 +56,10 @@ describe('DashboardService - Unit Tests', () => {
             createQueryBuilder: jest.fn(),
           },
         },
+        {
+          provide: getRepositoryToken(CardTransaction),
+          useValue: emptyCardTransactionsRepo(),
+        },
       ],
     }).compile();
 
@@ -78,8 +87,10 @@ describe('DashboardService - Unit Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '0',
           totalIncome: '0',
@@ -94,6 +105,7 @@ describe('DashboardService - Unit Tests', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '0',
           totalIncome: '0',
@@ -138,8 +150,10 @@ describe('DashboardService - Unit Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '5000',
           totalIncome: '0',
@@ -154,6 +168,7 @@ describe('DashboardService - Unit Tests', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '0',
           totalIncome: '0',
@@ -197,8 +212,10 @@ describe('DashboardService - Unit Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '10000',
           totalIncome: '15000',
@@ -213,6 +230,7 @@ describe('DashboardService - Unit Tests', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '8000',
           totalIncome: '12000',
@@ -245,8 +263,10 @@ describe('DashboardService - Unit Tests', () => {
       // ((10000 - 8000) / 8000) * 100 = 25%
       expect(result.comparisonPeriod.percentageChange).toBe(25);
 
-      // Verify the comparison query was called with correct date parameters
-      expect(comparisonQueryBuilder.where).toHaveBeenCalledWith(
+      // Verify the comparison query was called with correct date parameters.
+      // `where` is spent on the CC bill-payment exclusion, so both date bounds
+      // arrive as `andWhere`.
+      expect(comparisonQueryBuilder.andWhere).toHaveBeenCalledWith(
         't.transaction_date >= :compStartDate',
         expect.objectContaining({ compStartDate: expect.any(String) }),
       );
@@ -269,8 +289,10 @@ describe('DashboardService - Unit Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '3000',
           totalIncome: '5000',
@@ -285,6 +307,7 @@ describe('DashboardService - Unit Tests', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '2500',
           totalIncome: '4000',
@@ -345,8 +368,10 @@ describe('DashboardService - Unit Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '50000',
           totalIncome: '60000',
@@ -387,8 +412,10 @@ describe('DashboardService - Unit Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '6000',
           totalIncome: '10000',
@@ -403,6 +430,7 @@ describe('DashboardService - Unit Tests', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '10000',
           totalIncome: '12000',
@@ -445,6 +473,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -520,6 +549,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -581,6 +611,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -656,6 +687,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -691,6 +723,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -735,6 +768,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -784,6 +818,7 @@ describe('DashboardService - Unit Tests', () => {
       // Mock query builder with friend balance data
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -857,6 +892,7 @@ describe('DashboardService - Unit Tests', () => {
       // Mock query builder with some zero-balance friends
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -916,6 +952,7 @@ describe('DashboardService - Unit Tests', () => {
       // Now test with actual zero balance
       const queryBuilderWithZero = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -966,6 +1003,7 @@ describe('DashboardService - Unit Tests', () => {
       // Mock query builder with friends having various balances
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -1047,6 +1085,7 @@ describe('DashboardService - Unit Tests', () => {
       // Mock query builder with no results
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -1074,6 +1113,7 @@ describe('DashboardService - Unit Tests', () => {
       // Mock query builder with settlement-only friend
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -1112,6 +1152,7 @@ describe('DashboardService - Unit Tests', () => {
       // Mock query builder with transaction dates
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -1166,6 +1207,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1225,6 +1267,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1290,6 +1333,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1344,6 +1388,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1382,6 +1427,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1431,6 +1477,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1481,6 +1528,7 @@ describe('DashboardService - Unit Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1593,6 +1641,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1683,6 +1732,7 @@ describe('DashboardService - Unit Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1716,8 +1766,10 @@ describe('DashboardService - Unit Tests', () => {
       const queryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalIncome: '60000',
           totalExpenses: '45000',
@@ -1753,8 +1805,10 @@ describe('DashboardService - Unit Tests', () => {
       const queryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalIncome: '0',
           totalExpenses: '5000',
@@ -1789,8 +1843,10 @@ describe('DashboardService - Unit Tests', () => {
       const queryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalIncome: '40000',
           totalExpenses: '50000',
@@ -1827,8 +1883,10 @@ describe('DashboardService - Unit Tests', () => {
       const queryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalIncome: '30000',
           totalExpenses: '20000',

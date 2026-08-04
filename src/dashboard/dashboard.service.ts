@@ -316,8 +316,15 @@ export class DashboardService {
         `COALESCE(SUM(CASE WHEN tag.direction = 'SETTLEMENT' THEN tag.amount ELSE 0 END), 0)`,
         'totalSettlements',
       )
-      .addSelect('MAX(t.transaction_date)', 'lastTransactionDate')
-      .innerJoin('tag.transaction', 't')
+      // Left joins, not inner: a tag hangs off either a bank or a card
+      // transaction, and an inner join on one would drop every tag of the
+      // other kind from the balance entirely.
+      .addSelect(
+        'MAX(COALESCE(t.transaction_date, ct.txn_date))',
+        'lastTransactionDate',
+      )
+      .leftJoin('tag.transaction', 't')
+      .leftJoin('tag.cardTransaction', 'ct')
       .groupBy('tag.friend_id, f.name')
       .getRawMany();
 

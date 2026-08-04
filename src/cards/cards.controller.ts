@@ -30,12 +30,16 @@ import {
   CreateCardStatementDto,
   UpdateCardStatementDto,
 } from './dto/create-card-statement.dto';
+import { cardSubject, FriendsService } from '../friends/friends.service';
+import { CreateTransactionFriendTagDto } from '../friends/dto/create-transaction-friend-tag.dto';
+import { UpdateTransactionFriendTagDto } from '../friends/dto/update-transaction-friend-tag.dto';
 
 @Controller('cards')
 export class CardsController {
   constructor(
     private readonly cardsService: CardsService,
     private readonly cardImportsService: CardImportsService,
+    private readonly friendsService: FriendsService,
   ) {}
 
   // ── CC statement imports ─────────────────────────────────────────────────
@@ -152,7 +156,18 @@ export class CardsController {
       statementId,
       unpaid: unpaid === 'true',
     });
-    return { count: data.length, data };
+    // Seed each row's friend tags inline (two queries for the whole page) so
+    // the table does not fire one request per row.
+    const tagsByTxn = await this.friendsService.listTagsForCardTransactions(
+      data.map((t) => String(t.id)),
+    );
+    return {
+      count: data.length,
+      data: data.map((t) => ({
+        ...t,
+        friendTags: tagsByTxn.get(String(t.id)) ?? [],
+      })),
+    };
   }
 
   @Post(':id/transactions')
@@ -174,6 +189,48 @@ export class CardsController {
   @Delete('transactions/:txnId')
   async removeTxn(@Param('txnId', ParseIntPipe) txnId: number) {
     return this.cardsService.removeTransaction(String(txnId));
+  }
+
+  // ── Friend tags on card transactions ───────────────────────────────────
+  // Mirrors /transactions/:id/friends so the UI can treat both kinds alike.
+  @Get('transactions/:txnId/friends')
+  async listTxnFriends(@Param('txnId', ParseIntPipe) txnId: number) {
+    const data = await this.friendsService.listSubjectTags(
+      cardSubject(String(txnId)),
+    );
+    return { count: data.length, data };
+  }
+
+  @Post('transactions/:txnId/friends')
+  async createTxnFriend(
+    @Param('txnId', ParseIntPipe) txnId: number,
+    @Body() dto: CreateTransactionFriendTagDto,
+  ) {
+    return this.friendsService.createSubjectTag(cardSubject(String(txnId)), dto);
+  }
+
+  @Patch('transactions/:txnId/friends/:tagId')
+  async updateTxnFriend(
+    @Param('txnId', ParseIntPipe) txnId: number,
+    @Param('tagId', ParseIntPipe) tagId: number,
+    @Body() dto: UpdateTransactionFriendTagDto,
+  ) {
+    return this.friendsService.updateSubjectTag(
+      cardSubject(String(txnId)),
+      String(tagId),
+      dto,
+    );
+  }
+
+  @Delete('transactions/:txnId/friends/:tagId')
+  async removeTxnFriend(
+    @Param('txnId', ParseIntPipe) txnId: number,
+    @Param('tagId', ParseIntPipe) tagId: number,
+  ) {
+    return this.friendsService.deleteSubjectTag(
+      cardSubject(String(txnId)),
+      String(tagId),
+    );
   }
 
   // ── Card payments ──────────────────────────────────────────────────────

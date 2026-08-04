@@ -19,7 +19,7 @@ import { WebauthnService } from './webauthn.service';
 import { SessionService } from './session.service';
 import { Public } from './public.decorator';
 import { isValidSetupToken } from './setup-token.util';
-import { COOKIE_NAME, sessionTtlMinutes } from './auth.constants';
+import { COOKIE_NAME, isAuthDisabled, sessionTtlMinutes } from './auth.constants';
 import { VerifyAuthenticationDto, VerifyRegistrationDto } from './dto/auth.dto';
 import type { AuthSession } from '../database/entities/auth-session.entity';
 
@@ -97,6 +97,9 @@ export class AuthController {
   @Public()
   @Get('session')
   session(@Req() req: AuthedRequest) {
+    if (isAuthDisabled()) {
+      return { authenticated: true, authDisabled: true, expiresAt: null };
+    }
     if (req.authSession) {
       return { authenticated: true, expiresAt: req.authSession.expiresAt };
     }

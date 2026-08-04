@@ -12,12 +12,59 @@ import {
 } from '../database/entities/transaction-friend-tag.entity';
 import { SettlementLink } from '../database/entities/settlement-link.entity';
 import { Transaction } from '../database/entities/transaction.entity';
+import { CardTransaction } from '../database/entities/card-transaction.entity';
 import { CreateFriendDto } from './dto/create-friend.dto';
 import { ListFriendsQueryDto } from './dto/list-friends.dto';
 import { UpdateFriendDto } from './dto/update-friend.dto';
 import { CreateTransactionFriendTagDto } from './dto/create-transaction-friend-tag.dto';
 import { UpdateTransactionFriendTagDto } from './dto/update-transaction-friend-tag.dto';
 import { FriendTransactionsQueryDto } from './dto/friend-transactions-query.dto';
+
+/**
+ * What a friend tag is attached to. A tag always has exactly one subject:
+ * a bank transaction or a credit-card transaction.
+ */
+export type TagSubject =
+  | { kind: 'bank'; id: string }
+  | { kind: 'card'; id: string };
+
+export const bankSubject = (id: string): TagSubject => ({ kind: 'bank', id });
+export const cardSubject = (id: string): TagSubject => ({ kind: 'card', id });
+
+/** The tag columns that identify a subject — usable directly as a TypeORM where. */
+function subjectWhere(subject: TagSubject) {
+  return subject.kind === 'bank'
+    ? { transactionId: subject.id }
+    : { cardTransactionId: subject.id };
+}
+
+/** Relations to hydrate so a tag can always render its subject. */
+const SUBJECT_RELATIONS = ['transaction', 'cardTransaction', 'cardTransaction.card'];
+
+/**
+ * Card transactions rendered in the shape the friend ledger already expects
+ * from a bank transaction, so every tag consumer works on either kind without
+ * branching. `subject` carries the real identity for callers that need it.
+ */
+function cardTransactionAsSubject(card: CardTransaction) {
+  const last4 = card.card?.last4;
+  return {
+    id: card.id,
+    transactionDate: card.txnDate,
+    narration: card.merchant,
+    upiName: card.merchant,
+    upiDescription: card.notes ?? null,
+    // Drives the ledger's meta line, which otherwise reads "Manual".
+    upiBank: last4 ? `Card ····${last4}` : 'Card',
+    // A refund puts money back, so it lands on the deposit side.
+    withdrawal: card.isRefund ? 0 : card.amount,
+    deposit: card.isRefund ? card.amount : 0,
+    isManual: false,
+    accountNumber: null,
+    categoryId: card.categoryId,
+    category: card.category ?? null,
+  };
+}
 
 @Injectable()
 export class FriendsService {
@@ -30,7 +77,51 @@ export class FriendsService {
     private readonly settlementLinkRepository: Repository<SettlementLink>,
     @InjectRepository(Transaction)
     private readonly transactionRepository: Repository<Transaction>,
+    @InjectRepository(CardTransaction)
+    private readonly cardTransactionRepository: Repository<CardTransaction>,
   ) {}
+
+  /**
+   * Collapses a tag's two possible subjects into the single `transaction`
+   * field the API has always returned, plus an explicit `subject` descriptor.
+   */
+  private shapeTag<T extends TransactionFriendTag>(tag: T) {
+    const { cardTransaction, ...rest } = tag as TransactionFriendTag & {
+      cardTransaction?: CardTransaction | null;
+    };
+    if (!cardTransaction) {
+      return {
+        ...rest,
+        subject: { kind: 'bank' as const, id: tag.transactionId },
+      };
+    }
+    return {
+      ...rest,
+      transaction: cardTransactionAsSubject(cardTransaction),
+      subject: {
+        kind: 'card' as const,
+        id: cardTransaction.id,
+        cardId: cardTransaction.cardId,
+        cardLast4: cardTransaction.card?.last4 ?? null,
+      },
+    };
+  }
+
+  private async assertSubjectExists(subject: TagSubject) {
+    const found =
+      subject.kind === 'bank'
+        ? await this.transactionRepository.findOne({ where: { id: subject.id } })
+        : await this.cardTransactionRepository.findOne({
+            where: { id: subject.id },
+          });
+    if (!found) {
+      throw new NotFoundException(
+        subject.kind === 'bank'
+          ? 'Transaction not found.'
+          : 'Card transaction not found.',
+      );
+    }
+  }
 
   async createFriend(dto: CreateFriendDto) {
     const friend = this.friendRepository.create({
@@ -90,27 +181,39 @@ export class FriendsService {
   }
 
   async listTransactionTags(transactionId: string) {
+    return this.listSubjectTags(bankSubject(transactionId));
+  }
+
+  async listSubjectTags(subject: TagSubject) {
     const tags = await this.tagRepository.find({
-      where: { transactionId },
-      relations: ['friend', 'transaction'],
+      where: subjectWhere(subject),
+      relations: ['friend', ...SUBJECT_RELATIONS],
       order: { id: 'ASC' },
     });
 
     // For each tag, load linked transactions if it's a settlement
     const tagsWithLinks = await Promise.all(
       tags.map(async (tag) => {
+        const shaped = this.shapeTag(tag);
         if (tag.direction === TransactionFriendDirection.Settlement) {
           const links = await this.settlementLinkRepository.find({
             where: { settlementTagId: tag.id },
-            relations: ['settledTag', 'settledTag.transaction'],
+            relations: [
+              'settledTag',
+              'settledTag.transaction',
+              'settledTag.cardTransaction',
+              'settledTag.cardTransaction.card',
+            ],
             order: { settledTagId: 'ASC' },
           });
           return {
-            ...tag,
-            settlesTransactions: links.map(link => link.settledTag),
+            ...shaped,
+            settlesTransactions: links.map((link) =>
+              link.settledTag ? this.shapeTag(link.settledTag) : link.settledTag,
+            ),
           };
         }
-        return tag;
+        return shaped;
       })
     );
 
@@ -130,14 +233,31 @@ export class FriendsService {
   async listTransactionTagsForTransactions(
     transactionIds: string[],
   ): Promise<Map<string, any[]>> {
+    return this.listTagsForSubjects('bank', transactionIds);
+  }
+
+  /** Batch variant for card transactions — see {@link listTransactionTagsForTransactions}. */
+  async listTagsForCardTransactions(
+    cardTransactionIds: string[],
+  ): Promise<Map<string, any[]>> {
+    return this.listTagsForSubjects('card', cardTransactionIds);
+  }
+
+  private async listTagsForSubjects(
+    kind: TagSubject['kind'],
+    subjectIds: string[],
+  ): Promise<Map<string, any[]>> {
     const byTransaction = new Map<string, any[]>();
-    if (transactionIds.length === 0) {
+    if (subjectIds.length === 0) {
       return byTransaction;
     }
 
     const tags = await this.tagRepository.find({
-      where: { transactionId: In(transactionIds) },
-      relations: ['friend', 'transaction'],
+      where:
+        kind === 'bank'
+          ? { transactionId: In(subjectIds) }
+          : { cardTransactionId: In(subjectIds) },
+      relations: ['friend', ...SUBJECT_RELATIONS],
       order: { id: 'ASC' },
     });
 
@@ -149,44 +269,56 @@ export class FriendsService {
     if (settlementTagIds.length > 0) {
       const links = await this.settlementLinkRepository.find({
         where: { settlementTagId: In(settlementTagIds) },
-        relations: ['settledTag', 'settledTag.transaction'],
+        relations: [
+          'settledTag',
+          'settledTag.transaction',
+          'settledTag.cardTransaction',
+          'settledTag.cardTransaction.card',
+        ],
         order: { settledTagId: 'ASC' },
       });
       for (const link of links) {
         const existing = settledTagsByLink.get(link.settlementTagId) ?? [];
-        existing.push(link.settledTag);
+        existing.push(
+          link.settledTag ? this.shapeTag(link.settledTag) : link.settledTag,
+        );
         settledTagsByLink.set(link.settlementTagId, existing);
       }
     }
 
     for (const tag of tags) {
+      const base = this.shapeTag(tag);
       const shaped =
         tag.direction === TransactionFriendDirection.Settlement
-          ? { ...tag, settlesTransactions: settledTagsByLink.get(tag.id) ?? [] }
-          : tag;
-      const existing = byTransaction.get(tag.transactionId) ?? [];
+          ? { ...base, settlesTransactions: settledTagsByLink.get(tag.id) ?? [] }
+          : base;
+      const subjectId =
+        kind === 'bank' ? tag.transactionId : tag.cardTransactionId;
+      if (!subjectId) continue;
+      const existing = byTransaction.get(subjectId) ?? [];
       existing.push(shaped);
-      byTransaction.set(tag.transactionId, existing);
+      byTransaction.set(subjectId, existing);
     }
 
     return byTransaction;
   }
 
   async createTransactionTag(transactionId: string, dto: CreateTransactionFriendTagDto) {
-    const [transaction, friend] = await Promise.all([
-      this.transactionRepository.findOne({ where: { id: transactionId } }),
+    return this.createSubjectTag(bankSubject(transactionId), dto);
+  }
+
+  async createSubjectTag(subject: TagSubject, dto: CreateTransactionFriendTagDto) {
+    const [, friend] = await Promise.all([
+      this.assertSubjectExists(subject),
       this.friendRepository.findOne({ where: { id: String(dto.friendId) } }),
     ]);
 
-    if (!transaction) {
-      throw new NotFoundException('Transaction not found.');
-    }
     if (!friend) {
       throw new NotFoundException('Friend not found.');
     }
 
     const existing = await this.tagRepository.findOne({
-      where: { transactionId, friendId: String(dto.friendId) },
+      where: { ...subjectWhere(subject), friendId: String(dto.friendId) },
     });
     if (existing) {
       throw new ConflictException('Friend already tagged on this transaction.');
@@ -232,7 +364,7 @@ export class FriendsService {
     }
 
     const tag = this.tagRepository.create({
-      transactionId,
+      ...subjectWhere(subject),
       friendId: String(dto.friendId),
       amount: dto.amount,
       direction: dto.direction,
@@ -260,8 +392,16 @@ export class FriendsService {
     tagId: string,
     dto: UpdateTransactionFriendTagDto,
   ) {
+    return this.updateSubjectTag(bankSubject(transactionId), tagId, dto);
+  }
+
+  async updateSubjectTag(
+    subject: TagSubject,
+    tagId: string,
+    dto: UpdateTransactionFriendTagDto,
+  ) {
     const tag = await this.tagRepository.findOne({
-      where: { id: tagId, transactionId },
+      where: { id: tagId, ...subjectWhere(subject) },
     });
 
     if (!tag) {
@@ -277,7 +417,7 @@ export class FriendsService {
       }
 
       const duplicate = await this.tagRepository.findOne({
-        where: { transactionId, friendId: String(dto.friendId) },
+        where: { ...subjectWhere(subject), friendId: String(dto.friendId) },
       });
       if (duplicate) {
         throw new ConflictException('Friend already tagged on this transaction.');
@@ -352,8 +492,12 @@ export class FriendsService {
   }
 
   async deleteTransactionTag(transactionId: string, tagId: string) {
+    return this.deleteSubjectTag(bankSubject(transactionId), tagId);
+  }
+
+  async deleteSubjectTag(subject: TagSubject, tagId: string) {
     const tag = await this.tagRepository.findOne({
-      where: { id: tagId, transactionId },
+      where: { id: tagId, ...subjectWhere(subject) },
     });
     if (!tag) {
       throw new NotFoundException('Tag not found.');
@@ -374,24 +518,30 @@ export class FriendsService {
     let tags: TransactionFriendTag[];
 
     if (hasDateRange) {
+      // A tag dates from whichever subject it hangs off, so both the filter
+      // and the ordering run on the coalesced date.
+      const subjectDate =
+        'COALESCE(transaction.transaction_date, cardTransaction.txn_date)';
       const qb = this.tagRepository
         .createQueryBuilder('tag')
         .leftJoinAndSelect('tag.transaction', 'transaction')
+        .leftJoinAndSelect('tag.cardTransaction', 'cardTransaction')
+        .leftJoinAndSelect('cardTransaction.card', 'card')
         .where('tag.friend_id = :friendId', { friendId });
 
       if (query?.start) {
-        qb.andWhere('transaction.transaction_date >= :start', { start: query.start });
+        qb.andWhere(`${subjectDate} >= :start`, { start: query.start });
       }
       if (query?.end) {
-        qb.andWhere('transaction.transaction_date <= :end', { end: query.end });
+        qb.andWhere(`${subjectDate} <= :end`, { end: query.end });
       }
 
-      qb.orderBy('transaction.transaction_date', 'ASC').addOrderBy('tag.id', 'ASC');
+      qb.orderBy(subjectDate, 'ASC').addOrderBy('tag.id', 'ASC');
       tags = await qb.getMany();
     } else {
       tags = await this.tagRepository.find({
         where: { friendId },
-        relations: ['transaction'],
+        relations: SUBJECT_RELATIONS,
         order: { id: 'DESC' },
       });
     }
@@ -400,26 +550,41 @@ export class FriendsService {
   }
 
   private async attachSettlementInfoToTags(tags: TransactionFriendTag[]) {
+    const settledRelations = (prefix: 'settledTag' | 'settlementTag') => [
+      prefix,
+      `${prefix}.transaction`,
+      `${prefix}.cardTransaction`,
+      `${prefix}.cardTransaction.card`,
+    ];
+
     return Promise.all(
       tags.map(async (tag) => {
         let settlesTransactions;
         if (tag.direction === TransactionFriendDirection.Settlement) {
           const links = await this.settlementLinkRepository.find({
             where: { settlementTagId: tag.id },
-            relations: ['settledTag', 'settledTag.transaction'],
+            relations: settledRelations('settledTag'),
           });
-          settlesTransactions = links.map((link) => link.settledTag);
+          settlesTransactions = links.map((link) =>
+            link.settledTag ? this.shapeTag(link.settledTag) : link.settledTag,
+          );
         }
 
         const settlementLinks = await this.settlementLinkRepository.find({
           where: { settledTagId: tag.id },
-          relations: ['settlementTag', 'settlementTag.transaction'],
+          relations: settledRelations('settlementTag'),
         });
         const settledBy =
-          settlementLinks.length > 0 ? settlementLinks.map((link) => link.settlementTag) : undefined;
+          settlementLinks.length > 0
+            ? settlementLinks.map((link) =>
+                link.settlementTag
+                  ? this.shapeTag(link.settlementTag)
+                  : link.settlementTag,
+              )
+            : undefined;
 
         return {
-          ...tag,
+          ...this.shapeTag(tag),
           settlesTransactions,
           settledBy,
         };
@@ -477,10 +642,12 @@ export class FriendsService {
       where: {
         friendId,
       },
-      relations: ['transaction'],
+      relations: SUBJECT_RELATIONS,
       order: { id: 'DESC' },
     }).then(tags =>
-      tags.filter(tag => tag.direction !== TransactionFriendDirection.Settlement)
+      tags
+        .filter(tag => tag.direction !== TransactionFriendDirection.Settlement)
+        .map((tag) => this.shapeTag(tag))
     );
   }
 }

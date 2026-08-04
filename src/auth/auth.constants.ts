@@ -20,3 +20,9 @@ export function sessionTtlMinutes(): number {
   const n = Number(process.env.SESSION_TTL_MINUTES);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_SESSION_TTL_MINUTES;
 }
+
+// Local dev bypass — set AUTH_DISABLED=true in .env. Never enable in production.
+export function isAuthDisabled(): boolean {
+  const v = process.env.AUTH_DISABLED?.trim().toLowerCase();
+  return v === 'true' || v === '1';
+}

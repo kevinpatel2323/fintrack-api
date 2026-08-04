@@ -8,7 +8,7 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { SessionService } from './session.service';
 import { IS_PUBLIC_KEY } from './public.decorator';
-import { COOKIE_NAME } from './auth.constants';
+import { COOKIE_NAME, isAuthDisabled } from './auth.constants';
 import type { AuthSession } from '../database/entities/auth-session.entity';
 
 type AuthedRequest = Request & {
@@ -27,6 +27,8 @@ export class SessionGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    if (isAuthDisabled()) return true;
+
     const req = context.switchToHttp().getRequest<AuthedRequest>();
     const token = req.cookies?.[COOKIE_NAME];
     const session = await this.sessions.validate(token);

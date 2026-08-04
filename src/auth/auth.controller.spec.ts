@@ -29,6 +29,7 @@ describe('AuthController', () => {
   beforeEach(() => {
     process.env.SETUP_TOKEN = 'secret-token';
     process.env.RP_ORIGIN = 'http://localhost:3001';
+    delete process.env.AUTH_DISABLED;
     webauthn = {
       getRegistrationOptions: jest.fn().mockResolvedValue({ challenge: 'c' }),
       verifyRegistration: jest.fn(),
@@ -115,7 +116,17 @@ describe('AuthController', () => {
   });
 
   describe('session introspection', () => {
+    it('reports authenticated with authDisabled when auth is off', () => {
+      process.env.AUTH_DISABLED = 'true';
+      expect(controller.session({} as never)).toEqual({
+        authenticated: true,
+        authDisabled: true,
+        expiresAt: null,
+      });
+    });
+
     it('reports authenticated when a session is attached', () => {
+      process.env.AUTH_DISABLED = undefined;
       const expiresAt = new Date();
       expect(controller.session({ authSession: { expiresAt } } as never)).toEqual(
         { authenticated: true, expiresAt },
@@ -123,6 +134,7 @@ describe('AuthController', () => {
     });
 
     it('reports unauthenticated otherwise', () => {
+      process.env.AUTH_DISABLED = undefined;
       expect(controller.session({} as never)).toEqual({ authenticated: false });
     });
   });
