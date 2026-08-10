@@ -41,9 +41,20 @@ export class Auth1707000120000 implements MigrationInterface {
 
     // Pending WebAuthn challenges (persisted because serverless lambdas share no
     // memory between the /options and /verify calls). Single-use, short-lived.
-    await queryRunner.query(
-      `CREATE TYPE webauthn_challenge_type AS ENUM ('registration', 'authentication');`,
-    );
+    // Guarded rather than bare: Postgres has no CREATE TYPE ... IF NOT EXISTS,
+    // and this migration has to be re-runnable on a database where the auth
+    // objects were applied by hand before the migration was recorded.
+    await queryRunner.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_type WHERE typname = 'webauthn_challenge_type'
+        ) THEN
+          CREATE TYPE webauthn_challenge_type
+            AS ENUM ('registration', 'authentication');
+        END IF;
+      END $$;
+    `);
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS webauthn_challenges (
         id BIGSERIAL PRIMARY KEY,
