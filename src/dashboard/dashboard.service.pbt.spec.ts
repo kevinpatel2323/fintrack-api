@@ -8,10 +8,12 @@ import { Account } from '../database/entities/account.entity';
 import { Friend } from '../database/entities/friend.entity';
 import { Category } from '../database/entities/category.entity';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
+import { CardTransaction } from '../database/entities/card-transaction.entity';
+import { emptyCardTransactionsRepo } from './testing/card-spend.mock';
 
 /**
  * Property-Based Tests for Dashboard Service
- * 
+ *
  * These tests validate universal correctness properties that must hold
  * for all possible inputs, not just specific examples.
  */
@@ -48,6 +50,10 @@ describe('DashboardService - Property-Based Tests', () => {
           useValue: {
             createQueryBuilder: jest.fn(),
           },
+        },
+        {
+          provide: getRepositoryToken(CardTransaction),
+          useValue: emptyCardTransactionsRepo(),
         },
       ],
     }).compile();
@@ -97,8 +103,10 @@ describe('DashboardService - Property-Based Tests', () => {
             const currentQueryBuilder = {
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               getRawOne: jest.fn().mockResolvedValue({
                 totalSpent: testData.currentPeriod.totalSpent.toString(),
                 totalIncome: testData.currentPeriod.totalIncome.toString(),
@@ -112,6 +120,7 @@ describe('DashboardService - Property-Based Tests', () => {
               where: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               getRawOne: jest.fn().mockResolvedValue({
                 totalSpent: testData.comparisonPeriod.totalSpent.toString(),
                 totalIncome: testData.comparisonPeriod.totalIncome.toString(),
@@ -187,8 +196,10 @@ describe('DashboardService - Property-Based Tests', () => {
       const currentQueryBuilder = {
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '0',
           totalIncome: '0',
@@ -202,6 +213,7 @@ describe('DashboardService - Property-Based Tests', () => {
         where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({
           totalSpent: '0',
           totalIncome: '0',
@@ -252,8 +264,10 @@ describe('DashboardService - Property-Based Tests', () => {
             const currentQueryBuilder = {
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               getRawOne: jest.fn().mockResolvedValue({
                 totalSpent: testData.totalSpent.toString(),
                 totalIncome: testData.totalIncome.toString(),
@@ -267,6 +281,7 @@ describe('DashboardService - Property-Based Tests', () => {
               where: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               getRawOne: jest.fn().mockResolvedValue({
                 totalSpent: '0',
                 totalIncome: '0',
@@ -345,6 +360,7 @@ describe('DashboardService - Property-Based Tests', () => {
               leftJoin: jest.fn().mockReturnThis(),
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
@@ -446,6 +462,7 @@ describe('DashboardService - Property-Based Tests', () => {
         leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -489,6 +506,7 @@ describe('DashboardService - Property-Based Tests', () => {
               leftJoin: jest.fn().mockReturnThis(),
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
@@ -555,7 +573,15 @@ describe('DashboardService - Property-Based Tests', () => {
               totalIOwe: fc.nat({ max: 100000 }), // Amount user owes friend
               totalOwesMe: fc.nat({ max: 100000 }), // Amount friend owes user
               totalSettlements: fc.nat({ max: 50000 }), // Settlement amounts
-              lastTransactionDate: fc.date({ min: new Date('2020-01-01'), max: new Date('2024-12-31') }).map(d => d.toISOString().split('T')[0]),
+              // noInvalidDate: fc.date() otherwise emits Invalid Date, and
+              // toISOString() throws RangeError on it (~40% of runs).
+              lastTransactionDate: fc
+                .date({
+                  min: new Date('2020-01-01'),
+                  max: new Date('2024-12-31'),
+                  noInvalidDate: true,
+                })
+                .map((d) => d.toISOString().split('T')[0]),
             }),
             { minLength: 1, maxLength: 10 },
           ),
@@ -563,6 +589,7 @@ describe('DashboardService - Property-Based Tests', () => {
             // Mock the query builder to return our generated friend data
             const queryBuilder = {
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
@@ -667,6 +694,7 @@ describe('DashboardService - Property-Based Tests', () => {
 
             const queryBuilder = {
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
@@ -717,6 +745,7 @@ describe('DashboardService - Property-Based Tests', () => {
             // Ensure totalOwesMe > totalIOwe + totalSettlements for positive balance
             const queryBuilder = {
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
@@ -776,6 +805,7 @@ describe('DashboardService - Property-Based Tests', () => {
             // Ensure totalIOwe > totalOwesMe for negative balance
             const queryBuilder = {
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               select: jest.fn().mockReturnThis(),
               addSelect: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
@@ -824,6 +854,7 @@ describe('DashboardService - Property-Based Tests', () => {
     it('Property: Empty friend tags should return empty array', async () => {
       const queryBuilder = {
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         select: jest.fn().mockReturnThis(),
         addSelect: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
@@ -904,6 +935,7 @@ describe('DashboardService - Property-Based Tests', () => {
               addSelect: jest.fn().mockReturnThis(),
               where: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
               orderBy: jest.fn().mockReturnThis(),
@@ -1007,6 +1039,7 @@ describe('DashboardService - Property-Based Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1038,6 +1071,7 @@ describe('DashboardService - Property-Based Tests', () => {
         addSelect: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
         innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
         andWhere: jest.fn().mockReturnThis(),
         groupBy: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
@@ -1109,6 +1143,7 @@ describe('DashboardService - Property-Based Tests', () => {
               addSelect: jest.fn().mockReturnThis(),
               where: jest.fn().mockReturnThis(),
               innerJoin: jest.fn().mockReturnThis(),
+              leftJoin: jest.fn().mockReturnThis(),
               andWhere: jest.fn().mockReturnThis(),
               groupBy: jest.fn().mockReturnThis(),
               orderBy: jest.fn().mockReturnThis(),

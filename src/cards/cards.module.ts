@@ -6,6 +6,7 @@ import { CardTransaction } from '../database/entities/card-transaction.entity';
 import { CardPayment } from '../database/entities/card-payment.entity';
 import { CardStatementImport } from '../database/entities/card-statement-import.entity';
 import { Category } from '../database/entities/category.entity';
+import { FriendsModule } from '../friends/friends.module';
 import { CardsController } from './cards.controller';
 import { CardsService } from './cards.service';
 import { CardImportsService } from './card-imports.service';
@@ -21,6 +22,8 @@ import { CardLinkService } from './card-link.service';
       CardStatementImport,
       Category,
     ]),
+    // For friend tags on card transactions.
+    FriendsModule,
   ],
   controllers: [CardsController],
   providers: [CardsService, CardImportsService, CardLinkService],

@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Transaction } from './transaction.entity';
+import { CardTransaction } from './card-transaction.entity';
 import { Friend } from './friend.entity';
 
 const numericTransformer = {
@@ -22,19 +23,32 @@ export enum TransactionFriendDirection {
   Settlement = 'SETTLEMENT',
 }
 
+/**
+ * A friend tag hangs off exactly one subject: a bank transaction or a card
+ * transaction. The either/or is enforced in the database by
+ * `chk_transaction_friend_tags_subject`; the uniqueness of (subject, friend)
+ * by a partial unique index per kind, so it is not declared here.
+ */
 @Entity({ name: 'transaction_friend_tags' })
-@Index(['transactionId', 'friendId'], { unique: true })
 export class TransactionFriendTag {
   @PrimaryGeneratedColumn('increment', { type: 'bigint' })
   id!: string;
 
   @Index()
-  @Column({ name: 'transaction_id', type: 'bigint' })
-  transactionId!: string;
+  @Column({ name: 'transaction_id', type: 'bigint', nullable: true })
+  transactionId!: string | null;
 
-  @ManyToOne(() => Transaction)
+  @ManyToOne(() => Transaction, { nullable: true })
   @JoinColumn({ name: 'transaction_id' })
-  transaction?: Transaction;
+  transaction?: Transaction | null;
+
+  @Index()
+  @Column({ name: 'card_transaction_id', type: 'bigint', nullable: true })
+  cardTransactionId!: string | null;
+
+  @ManyToOne(() => CardTransaction, { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'card_transaction_id' })
+  cardTransaction?: CardTransaction | null;
 
   @Index()
   @Column({ name: 'friend_id', type: 'bigint' })
@@ -52,6 +66,17 @@ export class TransactionFriendTag {
 
   @Column({ type: 'text', nullable: true })
   note!: string | null;
+
+  /**
+   * A remembered include/exclude choice for the friend's exported ledger.
+   *
+   * NULL means "no saved choice" — the export still includes the tag, but the
+   * decision was never pinned, so re-opening the export picker leaves it free
+   * to follow the default. TRUE/FALSE are the pinned answers and survive
+   * across exports.
+   */
+  @Column({ name: 'ledger_included', type: 'boolean', nullable: true })
+  ledgerIncluded!: boolean | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;

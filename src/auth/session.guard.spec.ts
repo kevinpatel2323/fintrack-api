@@ -14,11 +14,26 @@ describe('SessionGuard', () => {
   let reflector: { getAllAndOverride: jest.Mock };
   let sessions: { validate: jest.Mock };
   let guard: SessionGuard;
+  const env = process.env;
 
   beforeEach(() => {
+    process.env = { ...env, AUTH_DISABLED: undefined };
     reflector = { getAllAndOverride: jest.fn() };
     sessions = { validate: jest.fn() };
     guard = new SessionGuard(reflector as never, sessions as never);
+  });
+
+  afterEach(() => {
+    process.env = env;
+  });
+
+  it('allows all routes when auth is disabled', async () => {
+    process.env.AUTH_DISABLED = 'true';
+    reflector.getAllAndOverride.mockReturnValue(false);
+    await expect(
+      guard.canActivate(makeContext({ cookies: {} })),
+    ).resolves.toBe(true);
+    expect(sessions.validate).not.toHaveBeenCalled();
   });
 
   it('allows @Public routes even without a session', async () => {

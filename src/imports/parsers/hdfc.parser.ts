@@ -87,12 +87,13 @@ function extractAccountNumber(rows: unknown[]): string | null {
   const targetRow = rows[14];
   if (!Array.isArray(targetRow)) return null;
   const cellValue = targetRow[4];
-  console.log(cellValue);
   if (!cellValue) return null;
-  const text = String(cellValue);
-  const match = text.slice(12,26)
-  console.log(match);
-  return match;
+  // Characters 12–26 of this header cell hold the account number. A shorter cell
+  // (or a file that isn't an HDFC bank statement) slices to junk or an empty
+  // string, so only trust the result if it actually carries an account number.
+  const candidate = String(cellValue).slice(12, 26).trim();
+  const digitCount = (candidate.match(/\d/g) ?? []).length;
+  return digitCount >= 9 ? candidate : null;
 }
 
 export function parseHdfcStatement(buffer: Buffer): ParsedStatement {

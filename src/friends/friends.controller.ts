@@ -15,6 +15,7 @@ import { CreateFriendDto } from './dto/create-friend.dto';
 import { UpdateFriendDto } from './dto/update-friend.dto';
 import { ListFriendsQueryDto } from './dto/list-friends.dto';
 import { FriendTransactionsQueryDto } from './dto/friend-transactions-query.dto';
+import { UpdateLedgerPreferencesDto } from './dto/update-ledger-preferences.dto';
 
 @Controller('friends')
 export class FriendsController {
@@ -57,6 +58,14 @@ export class FriendsController {
   ) {
     const data = await this.friendsService.listFriendTransactions(String(id), query);
     return { count: data.length, data };
+  }
+
+  @Patch(':id/ledger-preferences')
+  async updateLedgerPreferences(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateLedgerPreferencesDto,
+  ) {
+    return this.friendsService.updateLedgerPreferences(String(id), dto);
   }
 
   @Get(':id/summary')

@@ -17,6 +17,8 @@ import { ImportsListQueryDto } from './dto/imports-list.dto';
 import { TransactionsRangeQueryDto } from './dto/transactions-range.dto';
 import { FriendsService } from '../friends/friends.service';
 import { CardLinkService } from '../cards/card-link.service';
+import { looksLikeCreditCardStatement } from '../cards/parsers/hdfc-cc.parser';
+import { CardImportsService } from '../cards/card-imports.service';
 
 @Controller('imports')
 export class ImportsController {
@@ -24,6 +26,7 @@ export class ImportsController {
     private readonly importsService: ImportsService,
     private readonly friendsService: FriendsService,
     private readonly cardLinkService: CardLinkService,
+    private readonly cardImportsService: CardImportsService,
   ) {}
 
   private mapImport(importRow: any) {
@@ -40,6 +43,16 @@ export class ImportsController {
       throw new BadRequestException('Missing file: statement');
     }
 
+    // One upload box handles both statement kinds; a credit card statement is
+    // routed to the card it names rather than rejected.
+    if (looksLikeCreditCardStatement(file.buffer)) {
+      const card = await this.cardImportsService.importDetected(
+        file.buffer,
+        file.originalname,
+      );
+      return { message: 'Import complete', ...card };
+    }
+
     const parsed = parseHdfcStatement(file.buffer);
     if (parsed.entries.length === 0) {
       throw new BadRequestException('No entries parsed from statement.');
@@ -50,7 +63,12 @@ export class ImportsController {
       file.originalname,
       parsed.accountNumber,
     );
-    return { message: 'Import complete', accountNumber: parsed.accountNumber, ...result };
+    return {
+      message: 'Import complete',
+      kind: 'bank',
+      accountNumber: parsed.accountNumber,
+      ...result,
+    };
   }
 
   @Post('hdfc/preview')
@@ -60,13 +78,18 @@ export class ImportsController {
       throw new BadRequestException('Missing file: statement');
     }
 
+    if (looksLikeCreditCardStatement(file.buffer)) {
+      const card = await this.cardImportsService.previewDetected(file.buffer);
+      return { message: 'Preview ready', ...card };
+    }
+
     const parsed = parseHdfcStatement(file.buffer);
     if (parsed.entries.length === 0) {
       throw new BadRequestException('No entries parsed from statement.');
     }
 
     const result = await this.importsService.previewStatement(parsed.entries, parsed.accountNumber);
-    return { message: 'Preview ready', ...result };
+    return { message: 'Preview ready', kind: 'bank', ...result };
   }
 
   @Post(':id/revert')

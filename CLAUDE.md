@@ -61,6 +61,7 @@ src/
 | GET | `/friends/:id/summary` | Net balance totals |
 | GET | `/friends/:id/transactions` | Tagged transactions (supports `?start=&end=`) |
 | GET | `/friends/:id/linkeable-transactions` | Non-settlement tags available to link |
+| PATCH | `/friends/:id/ledger-preferences` | Bulk pin/unpin tags for ledger exports (`{ preferences: [{ tagId, included }] }`; `included: null` forgets the pin) |
 
 ### Transaction friend tags (`/transactions/:txId/tags`)
 | Method | Path | Description |
@@ -109,6 +110,7 @@ Reads HDFC Excel (.xlsx) export:
 - `transaction_friend_tags` has a unique constraint on `(transaction_id, friend_id)`.
 - `settlement_links` has a unique constraint on `(settlement_tag_id, settled_tag_id)`.
 - `SETTLEMENT` direction tags may carry `linkedTransactionIds`; only non-settlement tags can be linked.
+- `transaction_friend_tags.ledger_included` is a *nullable* boolean: `NULL` = no saved export choice, `TRUE`/`FALSE` = pinned in/out of the friend's PDF ledger. Nullable is load-bearing — "never decided" must stay distinct from "decided to include".
 
 ## Subscription RRULE rules
 
