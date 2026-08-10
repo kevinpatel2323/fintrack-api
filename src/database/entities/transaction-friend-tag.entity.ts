@@ -67,6 +67,17 @@ export class TransactionFriendTag {
   @Column({ type: 'text', nullable: true })
   note!: string | null;
 
+  /**
+   * A remembered include/exclude choice for the friend's exported ledger.
+   *
+   * NULL means "no saved choice" — the export still includes the tag, but the
+   * decision was never pinned, so re-opening the export picker leaves it free
+   * to follow the default. TRUE/FALSE are the pinned answers and survive
+   * across exports.
+   */
+  @Column({ name: 'ledger_included', type: 'boolean', nullable: true })
+  ledgerIncluded!: boolean | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 }

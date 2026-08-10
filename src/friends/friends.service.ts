@@ -19,6 +19,7 @@ import { UpdateFriendDto } from './dto/update-friend.dto';
 import { CreateTransactionFriendTagDto } from './dto/create-transaction-friend-tag.dto';
 import { UpdateTransactionFriendTagDto } from './dto/update-transaction-friend-tag.dto';
 import { FriendTransactionsQueryDto } from './dto/friend-transactions-query.dto';
+import { UpdateLedgerPreferencesDto } from './dto/update-ledger-preferences.dto';
 
 /**
  * What a friend tag is attached to. A tag always has exactly one subject:
@@ -590,6 +591,58 @@ export class FriendsService {
         };
       }),
     );
+  }
+
+  /**
+   * Pins tags in or out of this friend's exported ledger, or forgets the pin.
+   *
+   * The picker saves whole batches (one "remember all" click can cover every
+   * loaded row), so this collapses to at most three UPDATEs — one per distinct
+   * value — no matter how many tags were sent. A tag that belongs to another
+   * friend is a bug in the caller, not a partial success, so the whole batch
+   * is rejected before anything is written.
+   */
+  async updateLedgerPreferences(
+    friendId: string,
+    dto: UpdateLedgerPreferencesDto,
+  ) {
+    const friend = await this.friendRepository.findOne({ where: { id: friendId } });
+    if (!friend) {
+      throw new NotFoundException('Friend not found.');
+    }
+
+    // Last entry wins if the caller sent the same tag twice.
+    const wanted = new Map<string, boolean | null>();
+    for (const pref of dto.preferences ?? []) {
+      wanted.set(String(pref.tagId), pref.included ?? null);
+    }
+    if (wanted.size === 0) {
+      return { updated: 0 };
+    }
+
+    const tagIds = [...wanted.keys()];
+    const owned = await this.tagRepository.find({
+      where: { id: In(tagIds), friendId },
+      select: { id: true },
+    });
+    if (owned.length !== tagIds.length) {
+      throw new NotFoundException(
+        'One or more tags do not exist or belong to another friend.',
+      );
+    }
+
+    const byValue = new Map<boolean | null, string[]>();
+    for (const [tagId, included] of wanted) {
+      const bucket = byValue.get(included) ?? [];
+      bucket.push(tagId);
+      byValue.set(included, bucket);
+    }
+
+    for (const [included, ids] of byValue) {
+      await this.tagRepository.update({ id: In(ids) }, { ledgerIncluded: included });
+    }
+
+    return { updated: tagIds.length };
   }
 
   async getFriendSummary(friendId: string) {
