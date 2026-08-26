@@ -9,6 +9,7 @@ import { Card } from '../database/entities/card.entity';
 import { CardStatement } from '../database/entities/card-statement.entity';
 import { CardTransaction } from '../database/entities/card-transaction.entity';
 import { CardPayment } from '../database/entities/card-payment.entity';
+import { CardStatementImport } from '../database/entities/card-statement-import.entity';
 import { Category } from '../database/entities/category.entity';
 import { CreateCardDto } from './dto/create-card.dto';
 import { UpdateCardDto } from './dto/update-card.dto';
@@ -25,6 +26,7 @@ import {
   CreateCardStatementDto,
   UpdateCardStatementDto,
 } from './dto/create-card-statement.dto';
+import { monthRangeIso, openCycleRange, toIsoDay } from './card-cycle';
 
 export interface CardWithComputed extends Card {
   outstanding: number;
@@ -32,6 +34,10 @@ export interface CardWithComputed extends Card {
   utilizationPct: number | null;
   thisCycleSpend: number;
   thisMonthSpend: number;
+  /** The cycle that has not been billed yet — where today's spend belongs. */
+  currentCycle: { start: string; end: string };
+  /** Signed spend not yet attached to any statement. */
+  unbilledTotal: number;
   currentDue: number;
   currentDueDate: string | null;
   nextStatementId: string | null;
@@ -330,6 +336,13 @@ export class CardsService {
     if (dto.statementId)
       await this.assertStatementBelongsToCard(dto.statementId, cardId);
 
+    // Without an explicit statement, the date decides: a charge made after the
+    // last cycle closed has no statement yet and stays unbilled until one
+    // arrives. Filing it into the newest *unpaid* statement instead would put
+    // it in a cycle that has already closed.
+    const statementId =
+      dto.statementId ?? (await this.resolveStatementForDate(cardId, dto.txnDate));
+
     return this.dataSource.transaction(async (em) => {
       const txn = em.create(CardTransaction, {
         cardId,
@@ -337,7 +350,7 @@ export class CardsService {
         merchant: dto.merchant,
         txnDate: dto.txnDate,
         categoryId: dto.categoryId ?? null,
-        statementId: dto.statementId ?? null,
+        statementId,
         isRefund: dto.isRefund ?? false,
         notes: dto.notes ?? null,
       });
@@ -368,6 +381,16 @@ export class CardsService {
 
     const prevStatementId = txn.statementId;
 
+    // Correcting the date of an unbilled row re-files it. A row a statement has
+    // already billed stays where the statement put it unless moved explicitly.
+    const refileTo =
+      dto.statementId === undefined &&
+      prevStatementId === null &&
+      dto.txnDate !== undefined &&
+      dto.txnDate !== toIsoDay(txn.txnDate)
+        ? await this.resolveStatementForDate(txn.cardId, dto.txnDate)
+        : undefined;
+
     return this.dataSource.transaction(async (em) => {
       if (dto.amount !== undefined) txn.amount = dto.amount;
       if (dto.merchant !== undefined) txn.merchant = dto.merchant;
@@ -375,6 +398,7 @@ export class CardsService {
       if (dto.categoryId !== undefined) txn.categoryId = dto.categoryId ?? null;
       if (dto.statementId !== undefined)
         txn.statementId = dto.statementId ?? null;
+      else if (refileTo !== undefined) txn.statementId = refileTo;
       if (dto.isRefund !== undefined) txn.isRefund = dto.isRefund;
       if (dto.notes !== undefined) txn.notes = dto.notes ?? null;
       const saved = await em.save(txn);
@@ -570,9 +594,9 @@ export class CardsService {
 
   // ── Internals ────────────────────────────────────────────────────────────
   private async attachComputed(card: Card): Promise<CardWithComputed> {
-    const now = new Date();
-    const currentCycle = this.currentCycleRange(card, now);
-    const monthRange = this.monthRange(now);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const currentCycle = await this.openCycleFor(card, todayIso);
+    const monthRange = monthRangeIso(todayIso);
 
     const cycleSpendRow = card.statementDay
       ? await this.sumSpend(card.id, currentCycle.start, currentCycle.end)
@@ -582,6 +606,8 @@ export class CardsService {
       monthRange.start,
       monthRange.end,
     );
+    const unbilledTotal =
+      card.kind === 'credit' ? await this.sumUnbilled(card.id) : 0;
 
     let currentDue = 0;
     let currentDueDate: string | null = null;
@@ -622,6 +648,8 @@ export class CardsService {
       utilizationPct,
       thisCycleSpend: cycleSpendRow.sum,
       thisMonthSpend: monthSpendRow.sum,
+      currentCycle,
+      unbilledTotal,
       currentDue,
       currentDueDate,
       nextStatementId,
@@ -664,39 +692,54 @@ export class CardsService {
     return Math.max(spend - paid, 0);
   }
 
-  private currentCycleRange(
+  /**
+   * The open cycle for a card, anchored on the newest statement so it can never
+   * overlap one that already exists. Cycle arithmetic lives in `card-cycle.ts`
+   * so the import path and this view cannot drift apart again.
+   */
+  private async openCycleFor(
     card: Card,
-    now: Date,
-  ): { start: string; end: string } {
-    if (!card.statementDay) return this.monthRange(now);
-    const day = Math.min(card.statementDay, 28);
-    const today = now.getUTCDate();
-    const year = now.getUTCFullYear();
-    const month = now.getUTCMonth();
-    let startDate: Date;
-    let endDate: Date;
-    if (today >= day) {
-      startDate = new Date(Date.UTC(year, month, day));
-      endDate = new Date(Date.UTC(year, month + 1, day - 1));
-    } else {
-      startDate = new Date(Date.UTC(year, month - 1, day));
-      endDate = new Date(Date.UTC(year, month, day - 1));
-    }
-    return {
-      start: startDate.toISOString().slice(0, 10),
-      end: endDate.toISOString().slice(0, 10),
-    };
+    todayIso: string,
+  ): Promise<{ start: string; end: string }> {
+    const latest = await this.statementsRepo
+      .createQueryBuilder('s')
+      .select('MAX(s.cycle_end)::text', 'max')
+      .where('s.card_id = :cardId', { cardId: card.id })
+      .getRawOne<{ max: string | null }>();
+    return openCycleRange(
+      card.statementDay,
+      latest?.max ? toIsoDay(latest.max) : null,
+      todayIso,
+    );
   }
 
-  private monthRange(now: Date): { start: string; end: string } {
-    const y = now.getUTCFullYear();
-    const m = now.getUTCMonth();
-    const start = new Date(Date.UTC(y, m, 1));
-    const end = new Date(Date.UTC(y, m + 1, 0));
-    return {
-      start: start.toISOString().slice(0, 10),
-      end: end.toISOString().slice(0, 10),
-    };
+  /** The statement whose cycle contains `txnDate`, or null when none has billed it. */
+  private async resolveStatementForDate(
+    cardId: string,
+    txnDate: string,
+  ): Promise<string | null> {
+    const stmt = await this.statementsRepo
+      .createQueryBuilder('s')
+      .where('s.card_id = :cardId', { cardId })
+      .andWhere('CAST(:txnDate AS date) BETWEEN s.cycle_start AND s.cycle_end', {
+        txnDate,
+      })
+      .orderBy('s.cycle_start', 'DESC')
+      .getOne();
+    return stmt?.id ?? null;
+  }
+
+  private async sumUnbilled(cardId: string): Promise<number> {
+    const row = await this.txnsRepo
+      .createQueryBuilder('t')
+      .select(
+        'COALESCE(SUM(CASE WHEN t.is_refund THEN -t.amount ELSE t.amount END), 0)',
+        'sum',
+      )
+      .where('t.card_id = :cardId', { cardId })
+      .andWhere('t.statement_id IS NULL')
+      .getRawOne<{ sum: string }>();
+    return Number(row?.sum ?? 0);
   }
 
   private async recomputeStatementTotal(em: any, statementId: string): Promise<void> {
@@ -719,9 +762,18 @@ export class CardsService {
     const paid = Number(payRow?.sum ?? 0);
     const stmt = await em.findOne(CardStatement, { where: { id: statementId } });
     if (!stmt) return;
-    stmt.totalAmount = total;
+
+    // An imported statement's Total Amount Due is the bank's official figure and
+    // can include carried-over dues and interest that have no transaction rows,
+    // so a rows-only sum must never overwrite it. Same reasoning as
+    // `recomputeStatementPaid` in card-link.service.ts. Payments always recompute.
+    const isOfficial =
+      (await em.getRepository(CardStatementImport).count({
+        where: { statementId },
+      })) > 0;
+    if (!isOfficial) stmt.totalAmount = total;
     stmt.paidAmount = paid;
-    if (paid >= total && total > 0) stmt.status = 'paid';
+    if (paid >= stmt.totalAmount && stmt.totalAmount > 0) stmt.status = 'paid';
     await em.save(stmt);
   }
 

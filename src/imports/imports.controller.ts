@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
   NotFoundException,
@@ -18,7 +19,10 @@ import { TransactionsRangeQueryDto } from './dto/transactions-range.dto';
 import { FriendsService } from '../friends/friends.service';
 import { CardLinkService } from '../cards/card-link.service';
 import { looksLikeCreditCardStatement } from '../cards/parsers/hdfc-cc.parser';
-import { CardImportsService } from '../cards/card-imports.service';
+import {
+  CardImportsService,
+  parseConfirmedMatches,
+} from '../cards/card-imports.service';
 
 @Controller('imports')
 export class ImportsController {
@@ -38,7 +42,10 @@ export class ImportsController {
 
   @Post('hdfc')
   @UseInterceptors(FileInterceptor('statement'))
-  async importHdfc(@UploadedFile() file?: Express.Multer.File) {
+  async importHdfc(
+    @UploadedFile() file?: Express.Multer.File,
+    @Body('confirmedMatches') confirmedMatches?: string,
+  ) {
     if (!file) {
       throw new BadRequestException('Missing file: statement');
     }
@@ -49,6 +56,7 @@ export class ImportsController {
       const card = await this.cardImportsService.importDetected(
         file.buffer,
         file.originalname,
+        parseConfirmedMatches(confirmedMatches),
       );
       return { message: 'Import complete', ...card };
     }

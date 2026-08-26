@@ -37,7 +37,7 @@ src/
 ### Imports (`/imports`)
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/imports/hdfc` | Upload HDFC .xlsx statement (multipart `statement` field) |
+| POST | `/imports/hdfc` | Upload HDFC .xlsx statement (multipart `statement` field). A credit-card statement is routed to the card it names; optional `confirmedMatches` form field (JSON `[{parsedIndex, existingId}]`) narrows which rows merge into unbilled entries instead of being inserted |
 | POST | `/imports/hdfc/preview` | Parse without persisting; returns `previewRows` |
 | POST | `/imports/:id/revert` | Delete import + its transactions + their friend tags (transactional) |
 | GET | `/imports` | List imports (paginated: `?page=&limit=&accountNumber=`) |
@@ -111,6 +111,26 @@ Reads HDFC Excel (.xlsx) export:
 - `settlement_links` has a unique constraint on `(settlement_tag_id, settled_tag_id)`.
 - `SETTLEMENT` direction tags may carry `linkedTransactionIds`; only non-settlement tags can be linked.
 - `transaction_friend_tags.ledger_included` is a *nullable* boolean: `NULL` = no saved export choice, `TRUE`/`FALSE` = pinned in/out of the friend's PDF ledger. Nullable is load-bearing — "never decided" must stay distinct from "decided to include".
+
+## Credit-card billing cycles
+
+- `card_transactions.statement_id IS NULL` means **unbilled** — spend made after the
+  last statement closed, which has no statement to belong to yet. The web app labels it
+  via `cardTxnStatus`. Friend ledgers key off `txn_date`, so unbilled rows export
+  normally; never gate a ledger on `statement_id`.
+- Never file a transaction into "the next statement". `CardsService.createTransaction`
+  resolves the statement from `txn_date` (`resolveStatementForDate`) and leaves it NULL
+  when no cycle covers the date.
+- All cycle date math lives in `src/cards/card-cycle.ts` (`cycleStartFor`,
+  `openCycleRange`). A cycle is `[previous statement date + 1, statement date]`. The
+  import path and the live card view both use it — they used to disagree by a day.
+- `recomputeStatementTotal` must not overwrite `total_amount` on a statement that has a
+  `card_statement_imports` row: the bank's Total Amount Due includes carried-over dues
+  and interest with no transaction rows. Only `paid_amount` always recomputes.
+- CC import matches parsed rows against existing unbilled rows (`card-txn-match.ts`:
+  equal signed paise, `txn_date` within ±3 days) and bills them **in place**. Matched
+  rows keep `card_import_id = NULL`, which is what makes revert non-destructive —
+  revert deletes by `card_import_id` and un-bills the rest.
 
 ## Subscription RRULE rules
 

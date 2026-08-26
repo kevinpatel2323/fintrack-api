@@ -14,7 +14,10 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CardsService } from './cards.service';
-import { CardImportsService } from './card-imports.service';
+import {
+  CardImportsService,
+  parseConfirmedMatches,
+} from './card-imports.service';
 import { CreateCardDto } from './dto/create-card.dto';
 import { UpdateCardDto } from './dto/update-card.dto';
 import {
@@ -58,12 +61,14 @@ export class CardsController {
   async importCc(
     @Param('id', ParseIntPipe) id: number,
     @UploadedFile() file?: Express.Multer.File,
+    @Body('confirmedMatches') confirmedMatches?: string,
   ) {
     if (!file) throw new BadRequestException('Missing file: statement');
     const result = await this.cardImportsService.importStatement(
       String(id),
       file.buffer,
       file.originalname,
+      parseConfirmedMatches(confirmedMatches),
     );
     return { message: 'Import complete', ...result };
   }
