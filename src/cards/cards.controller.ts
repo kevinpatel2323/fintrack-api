@@ -84,6 +84,12 @@ export class CardsController {
     return this.cardImportsService.revertImport(String(importId));
   }
 
+  // Declared ahead of `:id` so the literal path is not parsed as a card id.
+  @Get('import-schedule')
+  async importSchedule() {
+    return this.cardImportsService.getImportSchedule();
+  }
+
   // ── Wallet / dues ──────────────────────────────────────────────────────
   @Get('wallet')
   async wallet() {

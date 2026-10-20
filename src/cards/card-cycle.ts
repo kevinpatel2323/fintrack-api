@@ -12,12 +12,12 @@
  */
 
 /** Last day of a 1-based month, e.g. (2026, 2) -> 28. */
-function daysInMonth(year: number, month1: number): number {
+export function daysInMonth(year: number, month1: number): number {
   return new Date(Date.UTC(year, month1, 0)).getUTCDate();
 }
 
 /** `day` in the given 1-based month, clamped to that month's length. */
-function clampedDayInMonth(year: number, month1: number, day: number): string {
+export function clampedDayInMonth(year: number, month1: number, day: number): string {
   const d = Math.min(day, daysInMonth(year, month1));
   return `${year}-${String(month1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }

@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { Card } from '../database/entities/card.entity';
 import { CardStatement } from '../database/entities/card-statement.entity';
 import { CardStatementImport } from '../database/entities/card-statement-import.entity';
@@ -17,6 +17,12 @@ import {
   ParsedCcStatement,
 } from './parsers/hdfc-cc.parser';
 import { addDaysIso, cycleStartFor, toIsoDay } from './card-cycle';
+import {
+  buildImportSchedule,
+  ImportSchedule,
+  monthOf,
+  ScheduledStatement,
+} from './card-import-schedule';
 import {
   DEFAULT_DATE_WINDOW_DAYS,
   EntryMatch,
@@ -357,6 +363,9 @@ export class CardImportsService {
     );
     const { matches, byId } = await this.proposeMatches(card.id, parsed);
     const matchedRows = alreadyImported ? 0 : matches.length;
+    const skippedStatements = alreadyImported
+      ? []
+      : await this.statementsSkippedBy(card, parsed.statementDate);
 
     return {
       kind: 'card' as const,
@@ -368,6 +377,7 @@ export class CardImportsService {
       minDue: parsed.minDue,
       creditLimit: parsed.creditLimit,
       alreadyImported,
+      skippedStatements,
       totalParsed: parsed.entries.length,
       willInsert: alreadyImported ? 0 : parsed.entries.length - matchedRows,
       skippedRows: alreadyImported ? parsed.entries.length : 0,
@@ -395,6 +405,111 @@ export class CardImportsService {
     );
 
     return { kind: 'card' as const, card: this.cardSummary(card), ...result };
+  }
+
+  // ── What to import next ──────────────────────────────────────────────────
+
+  /**
+   * Every credit card's import schedule: which statements are out and waiting,
+   * and when the next one lands. Cards with a statement waiting come first,
+   * the longest-waiting leading.
+   */
+  async getImportSchedule() {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const cards = await this.cardsRepo.find({
+      where: { kind: 'credit' },
+      order: { isPrimary: 'DESC', createdAt: 'ASC' },
+    });
+    if (cards.length === 0) return { today: todayIso, pendingCount: 0, cards: [] };
+
+    const ids = cards.map((c) => c.id);
+    const imports = await this.importsRepo.find({ where: { cardId: In(ids) } });
+    const unbilled = await this.txnsRepo
+      .createQueryBuilder('t')
+      .select('t.card_id', 'card_id')
+      .addSelect('t.txn_date::text', 'txn_date')
+      .where('t.card_id IN (:...ids)', { ids })
+      .andWhere('t.statement_id IS NULL')
+      .getRawMany<{ card_id: string; txn_date: string }>();
+
+    const rank: Record<ImportSchedule['status'], number> = {
+      ready: 0,
+      waiting: 1,
+      unknown: 2,
+    };
+    const rows = cards
+      .map((card) => {
+        const schedule = this.scheduleFor(
+          card,
+          imports.filter((i) => i.cardId === card.id),
+          todayIso,
+        );
+        // Spend entered by hand that the next statement will bill. The import
+        // review offers to merge these instead of adding them a second time.
+        const unbilledInNext = schedule.next
+          ? unbilled.filter(
+              (u) =>
+                String(u.card_id) === card.id &&
+                toIsoDay(u.txn_date) <= schedule.next!.expectedDate,
+            ).length
+          : 0;
+        return {
+          card: {
+            ...this.cardSummary(card),
+            bank: card.bank,
+            palette: card.palette,
+            statementDay: card.statementDay,
+          },
+          ...schedule,
+          unbilledInNext,
+        };
+      })
+      .sort(
+        (a, b) =>
+          rank[a.status] - rank[b.status] ||
+          (a.next?.expectedDate ?? '').localeCompare(b.next?.expectedDate ?? ''),
+      );
+
+    return {
+      today: todayIso,
+      pendingCount: rows.reduce((sum, r) => sum + r.pending.length, 0),
+      cards: rows,
+    };
+  }
+
+  private scheduleFor(
+    card: Card,
+    imports: CardStatementImport[],
+    todayIso: string,
+  ): ImportSchedule {
+    return buildImportSchedule({
+      cardStatementDay: card.statementDay,
+      last4: card.last4,
+      imports: imports.map((i) => ({
+        statementDate: toIsoDay(i.statementDate),
+        dueDate: i.dueDate ? toIsoDay(i.dueDate) : null,
+        filename: i.filename,
+      })),
+      todayIso,
+    });
+  }
+
+  /**
+   * Statements already out that come before this one and are not imported.
+   * Importing past them works, but it is usually a slip, so the preview says so.
+   */
+  private async statementsSkippedBy(
+    card: Card,
+    statementDate: string,
+  ): Promise<ScheduledStatement[]> {
+    const imports = await this.importsRepo.find({ where: { cardId: card.id } });
+    const schedule = this.scheduleFor(
+      card,
+      imports,
+      new Date().toISOString().slice(0, 10),
+    );
+    const month = monthOf(statementDate);
+    return schedule.pending.filter((p) => p.month < month);
   }
 
   async listImports(cardId: string): Promise<CardStatementImport[]> {
