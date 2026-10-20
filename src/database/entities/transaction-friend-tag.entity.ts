@@ -78,6 +78,16 @@ export class TransactionFriendTag {
   @Column({ name: 'ledger_included', type: 'boolean', nullable: true })
   ledgerIncluded!: boolean | null;
 
+  /**
+   * SETTLEMENT only: which way the money went — 'received' (the friend paid
+   * the user) or 'paid'. Derived from what the settlement is applied to and
+   * kept in step by FriendsService on every change, so balance queries read
+   * one column. NULL on settlements linked before amounts existed, which read
+   * as 'received', as they always have.
+   */
+  @Column({ name: 'settlement_side', type: 'text', nullable: true })
+  settlementSide!: 'received' | 'paid' | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 }

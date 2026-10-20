@@ -1,10 +1,11 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, ILike, In, Repository } from 'typeorm';
 import { Friend } from '../database/entities/friend.entity';
 import {
   TransactionFriendDirection,
@@ -20,6 +21,36 @@ import { CreateTransactionFriendTagDto } from './dto/create-transaction-friend-t
 import { UpdateTransactionFriendTagDto } from './dto/update-transaction-friend-tag.dto';
 import { FriendTransactionsQueryDto } from './dto/friend-transactions-query.dto';
 import { UpdateLedgerPreferencesDto } from './dto/update-ledger-preferences.dto';
+import { SettlementAllocationDto } from './dto/settlement-allocation.dto';
+import { CreateOffsetDto } from './dto/create-offset.dto';
+import { CreateWriteOffDto } from './dto/create-write-off.dto';
+import { ApplyLegacyReviewDto } from './dto/apply-legacy-review.dto';
+import { TagWriteOff } from '../database/entities/tag-write-off.entity';
+import { FriendOffset, FriendOffsetLine } from '../database/entities/friend-offset.entity';
+import { fromPaise, toPaise } from './settlement-allocation';
+import {
+  LedgerRows,
+  SettlementFigures,
+  computeLedger,
+  newErrors,
+  suggestLegacyConversion,
+  withSettlementLinks,
+  withTagChanged,
+  withoutTag,
+} from './friend-ledger';
+import { loadLedger, syncSettlementSides } from './friend-ledger.store';
+
+/** Placeholder id for a tag that does not exist yet, in a what-if ledger. */
+const NEW_TAG = 'new';
+
+const isDue = (direction: string) => direction === 'OWES_ME' || direction === 'I_OWE';
+
+/** A tag's subject date — bank or card — for oldest-first ordering. */
+function subjectDate(tag: TransactionFriendTag): string {
+  // Typed as a string, but a driver can still hand back a Date.
+  const raw: unknown = tag.transaction?.transactionDate ?? tag.cardTransaction?.txnDate ?? '';
+  return raw instanceof Date ? raw.toISOString().slice(0, 10) : String(raw).slice(0, 10);
+}
 
 /**
  * What a friend tag is attached to. A tag always has exactly one subject:
@@ -80,7 +111,130 @@ export class FriendsService {
     private readonly transactionRepository: Repository<Transaction>,
     @InjectRepository(CardTransaction)
     private readonly cardTransactionRepository: Repository<CardTransaction>,
+    private readonly dataSource: DataSource,
   ) {}
+
+  /**
+   * Bill-wise figures for a batch of tags: pending / settled / netted /
+   * written off for entries, applied / on account / side for settlements, each
+   * tag's signed balance effect, and the write-offs and offsets behind them.
+   * Computed from the whole ledger of every friend involved, so refunds and
+   * netting that reach beyond the batch still count.
+   */
+  private async allocationInfo(tags: TransactionFriendTag[]): Promise<Map<string, object>> {
+    const info = new Map<string, object>();
+    if (tags.length === 0) return info;
+    const loaded = await loadLedger(
+      this.dataSource.manager,
+      tags.map((t) => String(t.friendId)),
+    );
+    const ledger = computeLedger(loaded.rows);
+    for (const tag of tags) {
+      const id = String(tag.id);
+      const fig = ledger.figures.get(id);
+      if (!fig) continue;
+      const { kind: _kind, ...figures } = fig;
+      info.set(id, {
+        ...figures,
+        writeOffs: loaded.rows.writeOffs
+          .filter((w) => w.tagId === id)
+          .map((w) => ({ id: w.id, amount: w.amount, reason: w.reason })),
+        offsets: loaded.rows.offsetLines
+          .filter((l) => l.tagId === id)
+          .map((l) => ({ offsetId: l.offsetId, amount: l.amount })),
+      });
+    }
+    return info;
+  }
+
+  /**
+   * Applies `change` to the friend's ledger in memory and throws if that breaks
+   * a rule that held before — including flipping the direction of a settlement
+   * other than the ones being edited (a refund whose target changed sides,
+   * say). Rules already broken before the change (left by a cascade delete,
+   * for instance) do not block it.
+   *
+   * `targets` are tag ids the change points at; each must be one of this
+   * friend's tags.
+   */
+  private async assertLedgerChange(
+    friendId: string,
+    change: (rows: LedgerRows) => LedgerRows,
+    options: { targets?: string[]; editing?: string[] } = {},
+  ): Promise<void> {
+    const loaded = await loadLedger(this.dataSource.manager, [friendId]);
+    const targets = options.targets ?? [];
+    if (new Set(targets).size !== targets.length) {
+      throw new ConflictException('The same entry is listed more than once.');
+    }
+    for (const id of targets) {
+      if (!loaded.tags.has(String(id))) {
+        throw new ConflictException(`Entry #${id} does not exist or belongs to a different friend.`);
+      }
+    }
+
+    const before = computeLedger(loaded.rows);
+    const after = computeLedger(change(loaded.rows));
+    const editing = new Set((options.editing ?? []).map(String));
+    const messages = newErrors(before, after).map((e) => e.message);
+    for (const [id, fig] of after.figures) {
+      const was = before.figures.get(id);
+      if (
+        fig.kind === 'settlement' &&
+        was?.kind === 'settlement' &&
+        !editing.has(id) &&
+        fig.settlementSide !== was.settlementSide
+      ) {
+        messages.push(
+          `Settlement #${id} would change from money ${was.settlementSide} to money ${fig.settlementSide}. Change it first.`,
+        );
+      }
+    }
+    if (messages.length > 0) {
+      throw new ConflictException(
+        messages
+          .map((m) => m.replace(/Settlement #new\b/g, 'This settlement').replace(/#new\b/g, 'this settlement'))
+          .join(' '),
+      );
+    }
+  }
+
+  /** Re-derives and stores each settlement's side for these friends. */
+  private async syncSides(em: EntityManager, friendIds: string[]) {
+    const loaded = await loadLedger(em, friendIds);
+    await syncSettlementSides(em, loaded, computeLedger(loaded.rows));
+  }
+
+  private async writeAllocations(
+    em: EntityManager,
+    settlementTagId: string,
+    allocations: SettlementAllocationDto[],
+  ) {
+    await em.delete(SettlementLink, { settlementTagId });
+    if (allocations.length === 0) return;
+    await em.save(
+      allocations.map((a) =>
+        em.create(SettlementLink, {
+          settlementTagId,
+          settledTagId: String(a.tagId),
+          amount: a.amount,
+        }),
+      ),
+    );
+  }
+
+  /** True when amounts, offsets or write-offs hang off this tag. */
+  private async hasLedgerAttachments(tag: TransactionFriendTag): Promise<boolean> {
+    const loaded = await loadLedger(this.dataSource.manager, [String(tag.friendId)]);
+    const id = String(tag.id);
+    return (
+      loaded.rows.links.some(
+        (l) => (l.sourceId === id || l.targetId === id) && l.amount !== null,
+      ) ||
+      loaded.rows.offsetLines.some((l) => l.tagId === id) ||
+      loaded.rows.writeOffs.some((w) => w.tagId === id)
+    );
+  }
 
   /**
    * Collapses a tag's two possible subjects into the single `transaction`
@@ -106,6 +260,16 @@ export class FriendsService {
         cardLast4: cardTransaction.card?.last4 ?? null,
       },
     };
+  }
+
+  /**
+   * The tag at the other end of a settlement link, with `linkAmount` — how much
+   * of the settlement went to it, or null for a link made before amounts.
+   */
+  private shapeLinkedTag(link: SettlementLink, side: 'settledTag' | 'settlementTag') {
+    const linked = link[side];
+    if (!linked) return linked;
+    return { ...this.shapeTag(linked), linkAmount: link.amount ?? null };
   }
 
   private async assertSubjectExists(subject: TagSubject) {
@@ -192,10 +356,12 @@ export class FriendsService {
       order: { id: 'ASC' },
     });
 
+    const info = await this.allocationInfo(tags);
+
     // For each tag, load linked transactions if it's a settlement
     const tagsWithLinks = await Promise.all(
       tags.map(async (tag) => {
-        const shaped = this.shapeTag(tag);
+        const shaped = { ...this.shapeTag(tag), ...info.get(String(tag.id)) };
         if (tag.direction === TransactionFriendDirection.Settlement) {
           const links = await this.settlementLinkRepository.find({
             where: { settlementTagId: tag.id },
@@ -209,9 +375,7 @@ export class FriendsService {
           });
           return {
             ...shaped,
-            settlesTransactions: links.map((link) =>
-              link.settledTag ? this.shapeTag(link.settledTag) : link.settledTag,
-            ),
+            settlesTransactions: links.map((link) => this.shapeLinkedTag(link, 'settledTag')),
           };
         }
         return shaped;
@@ -280,15 +444,15 @@ export class FriendsService {
       });
       for (const link of links) {
         const existing = settledTagsByLink.get(link.settlementTagId) ?? [];
-        existing.push(
-          link.settledTag ? this.shapeTag(link.settledTag) : link.settledTag,
-        );
+        existing.push(this.shapeLinkedTag(link, 'settledTag'));
         settledTagsByLink.set(link.settlementTagId, existing);
       }
     }
 
+    const info = await this.allocationInfo(tags);
+
     for (const tag of tags) {
-      const base = this.shapeTag(tag);
+      const base = { ...this.shapeTag(tag), ...info.get(String(tag.id)) };
       const shaped =
         tag.direction === TransactionFriendDirection.Settlement
           ? { ...base, settlesTransactions: settledTagsByLink.get(tag.id) ?? [] }
@@ -339,6 +503,26 @@ export class FriendsService {
       throw new ConflictException('Amount must be greater than 0.');
     }
 
+    if (dto.allocations !== undefined && dto.linkedTransactionIds !== undefined) {
+      throw new BadRequestException('Send either allocations or linkedTransactionIds, not both.');
+    }
+    if (dto.allocations?.length) {
+      if (dto.direction !== TransactionFriendDirection.Settlement) {
+        throw new ConflictException('Only a settlement can be applied to entries.');
+      }
+      const allocations = dto.allocations.map((a) => ({ tagId: String(a.tagId), amount: a.amount }));
+      await this.assertLedgerChange(
+        String(dto.friendId),
+        (rows) =>
+          withSettlementLinks(
+            { ...rows, tags: [...rows.tags, { id: NEW_TAG, direction: dto.direction, amount: dto.amount }] },
+            NEW_TAG,
+            allocations,
+          ),
+        { targets: allocations.map((a) => a.tagId), editing: [NEW_TAG] },
+      );
+    }
+
     // Validate linked transactions if provided
     if (dto.linkedTransactionIds && dto.linkedTransactionIds.length > 0) {
       if (dto.direction !== TransactionFriendDirection.Settlement) {
@@ -372,20 +556,26 @@ export class FriendsService {
       note: dto.note ?? null,
     });
 
-    const savedTag = await this.tagRepository.save(tag);
+    // The tag and its links land together, so a failed link never leaves a
+    // settlement saved without the allocation it was created with.
+    return this.dataSource.transaction(async (em) => {
+      const savedTag = await em.save(tag);
 
-    // Create settlement links
-    if (dto.linkedTransactionIds && dto.linkedTransactionIds.length > 0) {
-      const links = dto.linkedTransactionIds.map(linkedId =>
-        this.settlementLinkRepository.create({
-          settlementTagId: savedTag.id,
-          settledTagId: String(linkedId),
-        })
-      );
-      await this.settlementLinkRepository.save(links);
-    }
+      if (dto.allocations?.length) {
+        await this.writeAllocations(em, savedTag.id, dto.allocations);
+      } else if (dto.linkedTransactionIds && dto.linkedTransactionIds.length > 0) {
+        const links = dto.linkedTransactionIds.map((linkedId) =>
+          em.create(SettlementLink, {
+            settlementTagId: savedTag.id,
+            settledTagId: String(linkedId),
+          }),
+        );
+        await em.save(links);
+      }
 
-    return savedTag;
+      await this.syncSides(em, [String(dto.friendId)]);
+      return savedTag;
+    });
   }
 
   async updateTransactionTag(
@@ -441,6 +631,38 @@ export class FriendsService {
       throw new ConflictException('Amount must be greater than 0.');
     }
 
+    const nextFriendId = dto.friendId ? String(dto.friendId) : String(tag.friendId);
+    const movingFriend = nextFriendId !== String(tag.friendId);
+    if (dto.allocations !== undefined && dto.linkedTransactionIds !== undefined) {
+      throw new BadRequestException('Send either allocations or linkedTransactionIds, not both.');
+    }
+    if (dto.allocations !== undefined && dto.allocations.length > 0) {
+      if (nextDirection !== TransactionFriendDirection.Settlement) {
+        throw new ConflictException('Only a settlement can be applied to entries.');
+      }
+      if (movingFriend) {
+        throw new ConflictException('Move the settlement to the other friend first, then apply it.');
+      }
+    }
+    if (movingFriend && (await this.hasLedgerAttachments(tag))) {
+      throw new ConflictException(
+        'This entry has settlement amounts, netting or write-offs attached. Remove them before moving it to another friend.',
+      );
+    }
+    if (!movingFriend && dto.linkedTransactionIds === undefined) {
+      const allocations = (dto.allocations ?? []).map((a) => ({ tagId: String(a.tagId), amount: a.amount }));
+      await this.assertLedgerChange(
+        String(tag.friendId),
+        (rows) => {
+          const changed = withTagChanged(rows, String(tag.id), { direction: nextDirection, amount: nextAmount });
+          return dto.allocations !== undefined
+            ? withSettlementLinks(changed, String(tag.id), allocations)
+            : changed;
+        },
+        { targets: allocations.map((a) => a.tagId), editing: [String(tag.id)] },
+      );
+    }
+
     // Validate linked transactions if provided
     if (dto.linkedTransactionIds !== undefined) {
       if (dto.linkedTransactionIds.length > 0 && nextDirection !== TransactionFriendDirection.Settlement) {
@@ -482,14 +704,20 @@ export class FriendsService {
       }
     }
 
-    const updated = this.tagRepository.merge(tag, {
-      friendId: dto.friendId ? String(dto.friendId) : tag.friendId,
-      amount: nextAmount,
-      direction: nextDirection,
-      note: dto.note ?? tag.note,
+    return this.dataSource.transaction(async (em) => {
+      if (dto.allocations !== undefined) {
+        await this.writeAllocations(em, String(tag.id), dto.allocations);
+      }
+      const updated = em.merge(TransactionFriendTag, tag, {
+        friendId: nextFriendId,
+        amount: nextAmount,
+        direction: nextDirection,
+        note: dto.note ?? tag.note,
+      });
+      const saved = await em.save(updated);
+      await this.syncSides(em, [String(tag.friendId), nextFriendId]);
+      return saved;
     });
-
-    return this.tagRepository.save(updated);
   }
 
   async deleteTransactionTag(transactionId: string, tagId: string) {
@@ -504,8 +732,19 @@ export class FriendsService {
       throw new NotFoundException('Tag not found.');
     }
 
-    // Settlement links will be automatically deleted due to CASCADE
-    await this.tagRepository.delete({ id: tagId });
+    // Removing an entry can strand what depends on it — a settlement that
+    // netted it in, say — so the ledger has to hold without it.
+    await this.assertLedgerChange(String(tag.friendId), (rows) => withoutTag(rows, String(tag.id)));
+
+    await this.dataSource.transaction(async (em) => {
+      // An offset is one balanced whole; losing a line voids all of it. Links
+      // and write-offs go with the tag through ON DELETE CASCADE.
+      const lines = await em.find(FriendOffsetLine, { where: { tagId: String(tag.id) } });
+      const offsetIds = [...new Set(lines.map((l) => String(l.offsetId)))];
+      if (offsetIds.length > 0) await em.delete(FriendOffset, { id: In(offsetIds) });
+      await em.delete(TransactionFriendTag, { id: tagId });
+      await this.syncSides(em, [String(tag.friendId)]);
+    });
     return { deleted: true };
   }
 
@@ -558,39 +797,52 @@ export class FriendsService {
       `${prefix}.cardTransaction.card`,
     ];
 
-    return Promise.all(
-      tags.map(async (tag) => {
-        let settlesTransactions;
-        if (tag.direction === TransactionFriendDirection.Settlement) {
-          const links = await this.settlementLinkRepository.find({
-            where: { settlementTagId: tag.id },
+    const ids = tags.map((t) => String(t.id));
+    const [outgoing, incoming] = ids.length
+      ? await Promise.all([
+          this.settlementLinkRepository.find({
+            where: { settlementTagId: In(ids) },
             relations: settledRelations('settledTag'),
-          });
-          settlesTransactions = links.map((link) =>
-            link.settledTag ? this.shapeTag(link.settledTag) : link.settledTag,
-          );
-        }
+            order: { id: 'ASC' },
+          }),
+          this.settlementLinkRepository.find({
+            where: { settledTagId: In(ids) },
+            relations: settledRelations('settlementTag'),
+            order: { id: 'ASC' },
+          }),
+        ])
+      : [[], []];
 
-        const settlementLinks = await this.settlementLinkRepository.find({
-          where: { settledTagId: tag.id },
-          relations: settledRelations('settlementTag'),
-        });
-        const settledBy =
-          settlementLinks.length > 0
-            ? settlementLinks.map((link) =>
-                link.settlementTag
-                  ? this.shapeTag(link.settlementTag)
-                  : link.settlementTag,
-              )
-            : undefined;
+    // Linked tags carry their own figures too, so a ledger can say what an
+    // entry still has open even when that entry sits outside the export.
+    const linkedTags = [
+      ...outgoing.map((l) => l.settledTag),
+      ...incoming.map((l) => l.settlementTag),
+    ].filter((t): t is TransactionFriendTag => Boolean(t));
+    const info = await this.allocationInfo([...tags, ...linkedTags]);
+    const linked = (link: SettlementLink, side: 'settledTag' | 'settlementTag') => {
+      const shaped = this.shapeLinkedTag(link, side);
+      return shaped ? { ...shaped, ...info.get(String(shaped.id)) } : shaped;
+    };
 
-        return {
-          ...this.shapeTag(tag),
-          settlesTransactions,
-          settledBy,
-        };
-      }),
-    );
+    return tags.map((tag) => {
+      const settlesTransactions =
+        tag.direction === TransactionFriendDirection.Settlement
+          ? outgoing.filter((l) => l.settlementTagId === tag.id).map((l) => linked(l, 'settledTag'))
+          : undefined;
+      const settledByLinks = incoming.filter((l) => l.settledTagId === tag.id);
+      const settledBy =
+        settledByLinks.length > 0
+          ? settledByLinks.map((l) => linked(l, 'settlementTag'))
+          : undefined;
+
+      return {
+        ...this.shapeTag(tag),
+        ...info.get(String(tag.id)),
+        settlesTransactions,
+        settledBy,
+      };
+    });
   }
 
   /**
@@ -645,62 +897,365 @@ export class FriendsService {
     return { updated: tagIds.length };
   }
 
-  async getFriendSummary(friendId: string) {
+  private async requireFriend(friendId: string): Promise<Friend> {
     const friend = await this.friendRepository.findOne({ where: { id: friendId } });
     if (!friend) {
       throw new NotFoundException('Friend not found.');
     }
+    return friend;
+  }
 
-    const raw = await this.tagRepository
-      .createQueryBuilder('tag')
-      .select(
-        `COALESCE(SUM(CASE WHEN tag.direction = :iOwe THEN tag.amount ELSE 0 END), 0)`,
-        'total_i_owe',
-      )
-      .addSelect(
-        `COALESCE(SUM(CASE WHEN tag.direction = :owesMe THEN tag.amount ELSE 0 END), 0)`,
-        'total_owes_me',
-      )
-      .addSelect(
-        `COALESCE(SUM(CASE WHEN tag.direction = :settlement THEN tag.amount ELSE 0 END), 0)`,
-        'total_settlements',
-      )
-      .where('tag.friend_id = :friendId', { friendId })
-      .setParameters({
-        iOwe: TransactionFriendDirection.IOwe,
-        owesMe: TransactionFriendDirection.OwesMe,
-        settlement: TransactionFriendDirection.Settlement,
-      })
-      .getRawOne();
+  /**
+   * Totals plus the bill-wise view: what is still open entry by entry on each
+   * side, settlement money on account, and `legacyDifference` — the part of
+   * the balance only unreviewed legacy settlements explain. Together they
+   * always reconcile: net = openOwesMe − openIOwe − onAccountReceived +
+   * onAccountPaid + legacyDifference.
+   */
+  async getFriendSummary(friendId: string) {
+    await this.requireFriend(friendId);
+    const loaded = await loadLedger(this.dataSource.manager, [friendId]);
+    const ledger = computeLedger(loaded.rows);
 
-    const totalIOwe = Number(raw?.total_i_owe ?? 0);
-    const totalOwesMe = Number(raw?.total_owes_me ?? 0);
-    const totalSettlements = Number(raw?.total_settlements ?? 0);
-    
-    // Net = (what they owe me) - (what I owe them) - settlements
-    // Settlements reduce the outstanding balance
-    const net = totalOwesMe - totalIOwe - totalSettlements;
+    let totalIOwe = 0;
+    let totalOwesMe = 0;
+    let totalSettlements = 0;
+    let totalSettlementsPaid = 0;
+    for (const tag of loaded.rows.tags) {
+      const amount = toPaise(tag.amount);
+      if (tag.direction === 'I_OWE') totalIOwe += amount;
+      if (tag.direction === 'OWES_ME') totalOwesMe += amount;
+      if (tag.direction === 'SETTLEMENT') {
+        totalSettlements += amount;
+        const fig = ledger.figures.get(tag.id) as SettlementFigures;
+        if (fig.settlementSide === 'paid') totalSettlementsPaid += amount;
+      }
+    }
+    const review = suggestLegacyConversion(loaded.rows);
 
     return {
       friendId,
-      totalIOwe,
-      totalOwesMe,
-      totalSettlements,
-      net,
+      totalIOwe: fromPaise(totalIOwe),
+      totalOwesMe: fromPaise(totalOwesMe),
+      totalSettlements: fromPaise(totalSettlements),
+      totalSettlementsReceived: fromPaise(totalSettlements - totalSettlementsPaid),
+      totalSettlementsPaid: fromPaise(totalSettlementsPaid),
+      totalWrittenOff: fromPaise(loaded.rows.writeOffs.reduce((s, w) => s + toPaise(w.amount), 0)),
+      net: ledger.totals.net,
+      openOwesMe: ledger.totals.openOwesMe,
+      openIOwe: ledger.totals.openIOwe,
+      onAccount: fromPaise(toPaise(ledger.totals.onAccountReceived) + toPaise(ledger.totals.onAccountPaid)),
+      onAccountReceived: ledger.totals.onAccountReceived,
+      onAccountPaid: ledger.totals.onAccountPaid,
+      legacyDifference: ledger.totals.legacyDifference,
+      legacySettlements: review.suggestions.length,
+      legacyNeedingReview: review.suggestions.filter((s) => s.reasons.length > 0).length,
     };
   }
 
   async getLinkeableTransactionsForFriend(friendId: string) {
-    return this.tagRepository.find({
-      where: {
-        friendId,
-      },
-      relations: SUBJECT_RELATIONS,
-      order: { id: 'DESC' },
-    }).then(tags =>
-      tags
-        .filter(tag => tag.direction !== TransactionFriendDirection.Settlement)
-        .map((tag) => this.shapeTag(tag))
+    const tags = await this.tagRepository
+      .find({
+        where: {
+          friendId,
+        },
+        relations: SUBJECT_RELATIONS,
+        order: { id: 'DESC' },
+      })
+      .then((all) => all.filter((tag) => tag.direction !== TransactionFriendDirection.Settlement));
+    const info = await this.allocationInfo(tags);
+    return tags.map((tag) => ({ ...this.shapeTag(tag), ...info.get(String(tag.id)) }));
+  }
+
+  /**
+   * What a settlement can be applied to, oldest first:
+   *
+   * - `data` — every entry, on either side, with something still pending.
+   *   Entries on the settlement's own side are paid off; entries on the other
+   *   side are netted in.
+   * - `refundable` — other settlements' money on account, which this one can
+   *   refund.
+   * - `balance` — the friend's reconciled totals, for context.
+   *
+   * When editing a settlement (`settlementTagId`), its own links are left out
+   * of the maths — they are about to be replaced — and come back as
+   * `currentAllocation`, so what it already covers stays listed. Entries an
+   * amount-less (pre-allocation) link settled are left out: what was paid
+   * against them was never recorded.
+   */
+  async listOpenDues(friendId: string, settlementTagId?: string) {
+    await this.requireFriend(friendId);
+    const loaded = await loadLedger(this.dataSource.manager, [friendId]);
+    if (settlementTagId) {
+      const settlement = loaded.tags.get(settlementTagId);
+      if (!settlement || settlement.direction !== TransactionFriendDirection.Settlement) {
+        throw new NotFoundException('Settlement not found for this friend.');
+      }
+    }
+
+    const own = new Map<string, number | null>();
+    for (const l of loaded.rows.links) {
+      if (settlementTagId && l.sourceId === settlementTagId) own.set(l.targetId, l.amount);
+    }
+    const without = settlementTagId
+      ? computeLedger(withSettlementLinks(loaded.rows, settlementTagId, []))
+      : computeLedger(loaded.rows);
+    const refundSources = new Set(
+      loaded.rows.links
+        .filter((l) => l.sourceId !== settlementTagId && loaded.tags.get(l.targetId)?.direction === 'SETTLEMENT')
+        .map((l) => l.sourceId),
     );
+
+    const dues = [];
+    const refundable = [];
+    for (const [id, tag] of loaded.tags) {
+      const fig = without.figures.get(id);
+      if (!fig) continue;
+      const { kind, ...figures } = fig;
+      const current = own.has(id) ? own.get(id) ?? null : null;
+      if (kind === 'due') {
+        const listed = own.has(id) || (!fig.settlementLegacy && fig.pendingAmount > 0);
+        if (listed) dues.push({ ...this.shapeTag(tag), ...figures, currentAllocation: current });
+      } else if (kind === 'settlement' && id !== settlementTagId) {
+        const listed =
+          !fig.settlementLegacy &&
+          !refundSources.has(id) &&
+          (own.has(id) || (fig.unallocatedAmount ?? 0) > 0);
+        if (listed) refundable.push({ ...this.shapeTag(tag), ...figures, currentAllocation: current });
+      }
+    }
+
+    const byDate = (a: { id: string }, b: { id: string }) =>
+      subjectDate(loaded.tags.get(String(a.id))!).localeCompare(subjectDate(loaded.tags.get(String(b.id))!)) ||
+      Number(a.id) - Number(b.id);
+    return {
+      count: dues.length,
+      data: dues.sort(byDate),
+      refundable: refundable.sort(byDate),
+      balance: computeLedger(loaded.rows).totals,
+    };
+  }
+
+  // ── Netting without money ──────────────────────────────────────────────
+
+  async listOffsets(friendId: string) {
+    await this.requireFriend(friendId);
+    const offsets = await this.dataSource.getRepository(FriendOffset).find({
+      where: { friendId },
+      relations: ['lines', 'lines.tag', 'lines.tag.transaction', 'lines.tag.cardTransaction', 'lines.tag.cardTransaction.card'],
+      order: { createdAt: 'DESC' },
+    });
+    return offsets.map((o) => ({
+      id: o.id,
+      note: o.note,
+      createdAt: o.createdAt,
+      amount: fromPaise(
+        (o.lines ?? [])
+          .filter((l) => l.tag?.direction === TransactionFriendDirection.OwesMe)
+          .reduce((s, l) => s + toPaise(l.amount), 0),
+      ),
+      lines: (o.lines ?? []).map((l) => ({
+        id: l.id,
+        amount: l.amount,
+        tag: l.tag ? this.shapeTag(l.tag) : null,
+      })),
+    }));
+  }
+
+  /**
+   * Nets what the friend owes against what the user owes them, entry by entry,
+   * with no money moving. Both sides must clear the same amount.
+   */
+  async createOffset(friendId: string, dto: CreateOffsetDto) {
+    await this.requireFriend(friendId);
+    const lines = dto.lines.map((l) => ({ tagId: String(l.tagId), amount: l.amount }));
+    await this.assertLedgerChange(
+      friendId,
+      (rows) => ({
+        ...rows,
+        offsetLines: [...rows.offsetLines, ...lines.map((l) => ({ offsetId: NEW_TAG, ...l }))],
+      }),
+      { targets: lines.map((l) => l.tagId) },
+    );
+
+    return this.dataSource.transaction(async (em) => {
+      const offset = await em.save(
+        em.create(FriendOffset, {
+          friendId,
+          note: dto.note?.trim() || null,
+          lines: lines.map((l) => em.create(FriendOffsetLine, { tagId: l.tagId, amount: l.amount })),
+        }),
+      );
+      return { id: offset.id };
+    });
+  }
+
+  /** Undoes a netting; the entries go back to pending. */
+  async deleteOffset(friendId: string, offsetId: string) {
+    const offset = await this.dataSource
+      .getRepository(FriendOffset)
+      .findOne({ where: { id: offsetId, friendId } });
+    if (!offset) throw new NotFoundException('Netting not found.');
+    await this.dataSource.getRepository(FriendOffset).delete({ id: offsetId });
+    return { deleted: true };
+  }
+
+  // ── Write-offs ─────────────────────────────────────────────────────────
+
+  /** Closes a leftover on an entry or a settlement; the balance moves by exactly `amount`. */
+  async createWriteOff(friendId: string, dto: CreateWriteOffDto) {
+    await this.requireFriend(friendId);
+    const tagId = String(dto.tagId);
+    await this.assertLedgerChange(
+      friendId,
+      (rows) => ({
+        ...rows,
+        writeOffs: [...rows.writeOffs, { id: NEW_TAG, tagId, amount: dto.amount }],
+      }),
+      { targets: [tagId] },
+    );
+    const saved = await this.dataSource.getRepository(TagWriteOff).save(
+      this.dataSource.getRepository(TagWriteOff).create({
+        tagId,
+        amount: dto.amount,
+        reason: dto.reason?.trim() || 'Round-off',
+      }),
+    );
+    return { id: saved.id };
+  }
+
+  async deleteWriteOff(friendId: string, writeOffId: string) {
+    const writeOff = await this.dataSource
+      .getRepository(TagWriteOff)
+      .findOne({ where: { id: writeOffId }, relations: ['tag'] });
+    if (!writeOff || String(writeOff.tag?.friendId) !== friendId) {
+      throw new NotFoundException('Write-off not found.');
+    }
+    await this.dataSource.getRepository(TagWriteOff).delete({ id: writeOffId });
+    return { deleted: true };
+  }
+
+  // ── Reviewing settlements saved before amounts existed ─────────────────
+
+  /**
+   * The friend's amount-less settlements, each with the amounts its links most
+   * plausibly meant, what would be left over, and how the balance would move.
+   * Nothing is changed until the review is applied.
+   */
+  async getLegacyReview(friendId: string) {
+    await this.requireFriend(friendId);
+    const loaded = await loadLedger(this.dataSource.manager, [friendId]);
+    const review = suggestLegacyConversion(loaded.rows);
+
+    return {
+      netBefore: review.netBefore,
+      netAfter: review.netAfter,
+      settlements: review.suggestions.map((s) => {
+        const suggested = new Map(s.allocations.map((a) => [a.tagId, a.amount]));
+        const linked = loaded.rows.links
+          .filter((l) => l.sourceId === s.settlementId)
+          .map((l) => loaded.tags.get(l.targetId))
+          .filter((t): t is TransactionFriendTag => Boolean(t))
+          .sort((a, b) => subjectDate(a).localeCompare(subjectDate(b)) || Number(a.id) - Number(b.id))
+          .map((t) => ({
+            ...this.shapeTag(t),
+            suggestedAmount: suggested.get(String(t.id)) ?? 0,
+            stale: s.staleTagIds.includes(String(t.id)),
+            short: s.shortTagIds.includes(String(t.id)),
+          }));
+        return {
+          ...s,
+          settlement: this.shapeTag(loaded.tags.get(s.settlementId)!),
+          linked,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Gives all of a friend's amount-less settlements real amounts at once —
+   * together, because several of them can share an entry and only the end
+   * state is meaningful. Every rule must hold afterwards.
+   */
+  async applyLegacyReview(friendId: string, dto: ApplyLegacyReviewDto) {
+    await this.requireFriend(friendId);
+    const loaded = await loadLedger(this.dataSource.manager, [friendId]);
+    const legacyIds = new Set(loaded.rows.links.filter((l) => l.amount === null).map((l) => l.sourceId));
+    const submitted = dto.settlements.map((s) => String(s.settlementTagId));
+    if (
+      submitted.length !== legacyIds.size ||
+      new Set(submitted).size !== submitted.length ||
+      submitted.some((id) => !legacyIds.has(id))
+    ) {
+      throw new BadRequestException(
+        `Review all ${legacyIds.size} older settlement(s) for this friend together.`,
+      );
+    }
+
+    const plans = dto.settlements.map((s) => ({
+      id: String(s.settlementTagId),
+      allocations: s.allocations.map((a) => ({ tagId: String(a.tagId), amount: a.amount })),
+    }));
+    for (const plan of plans) {
+      if (new Set(plan.allocations.map((a) => a.tagId)).size !== plan.allocations.length) {
+        throw new ConflictException('The same entry is listed more than once.');
+      }
+    }
+    await this.assertLedgerChange(
+      friendId,
+      (rows) => plans.reduce((r, plan) => withSettlementLinks(r, plan.id, plan.allocations), rows),
+      {
+        targets: [...new Set(plans.flatMap((p) => p.allocations.map((a) => a.tagId)))],
+        editing: plans.map((p) => p.id),
+      },
+    );
+
+    await this.dataSource.transaction(async (em) => {
+      for (const plan of plans) {
+        await this.writeAllocations(em, plan.id, plan.allocations.map((a) => ({ tagId: Number(a.tagId), amount: a.amount })));
+      }
+      await this.syncSides(em, [friendId]);
+    });
+    return this.getFriendSummary(friendId);
+  }
+
+  /** Friends with amount-less settlements, and how many of those need a decision. */
+  async legacyReviewSummary() {
+    const rows = await this.settlementLinkRepository
+      .createQueryBuilder('l')
+      .innerJoin('l.settlementTag', 's')
+      .select('DISTINCT s.friend_id', 'friendId')
+      .where('l.amount IS NULL')
+      .getRawMany<{ friendId: string }>();
+    const friendIds = rows.map((r) => String(r.friendId));
+    if (friendIds.length === 0) return { needingReview: 0, friends: [] };
+
+    const [loaded, friends] = await Promise.all([
+      loadLedger(this.dataSource.manager, friendIds),
+      this.friendRepository.find({ where: { id: In(friendIds) } }),
+    ]);
+    const result = friends
+      .map((friend) => {
+        const id = String(friend.id);
+        const own = new Set(loaded.rows.tags.filter((t) => String(loaded.tags.get(t.id)?.friendId) === id).map((t) => t.id));
+        const review = suggestLegacyConversion({
+          tags: loaded.rows.tags.filter((t) => own.has(t.id)),
+          links: loaded.rows.links.filter((l) => own.has(l.sourceId)),
+          offsetLines: loaded.rows.offsetLines.filter((l) => own.has(l.tagId)),
+          writeOffs: loaded.rows.writeOffs.filter((w) => own.has(w.tagId)),
+        });
+        return {
+          friendId: id,
+          friendName: friend.name,
+          legacySettlements: review.suggestions.length,
+          needingReview: review.suggestions.filter((s) => s.reasons.length > 0).length,
+          netChange: fromPaise(toPaise(review.netAfter) - toPaise(review.netBefore)),
+        };
+      })
+      .sort((a, b) => b.needingReview - a.needingReview || a.friendName.localeCompare(b.friendName));
+    return {
+      needingReview: result.reduce((s, f) => s + f.needingReview, 0),
+      friends: result,
+    };
   }
 }

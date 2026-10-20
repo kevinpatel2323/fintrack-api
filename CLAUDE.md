@@ -58,17 +58,24 @@ src/
 |--------|------|-------------|
 | GET/POST | `/friends` | List (supports `?q=` search) / Create |
 | GET/PATCH/DELETE | `/friends/:id` | Read / Update / Delete (blocked if has tags) |
-| GET | `/friends/:id/summary` | Net balance totals |
+| GET | `/friends/review-summary` | Friends with legacy (amount-less) settlements and how many need a decision |
+| GET | `/friends/:id/summary` | Net balance and the reconciled bill-wise view: `openOwesMe`, `openIOwe`, `onAccountReceived`/`Paid`, `legacyDifference`, `legacyNeedingReview` |
 | GET | `/friends/:id/transactions` | Tagged transactions (supports `?start=&end=`) |
-| GET | `/friends/:id/linkeable-transactions` | Non-settlement tags available to link |
+| GET | `/friends/:id/linkable-transactions` | Non-settlement tags available to link |
+| GET | `/friends/:id/open-dues` | What a settlement can be applied to: `data` (entries pending on either side, oldest first), `refundable` (other settlements' money on account), `balance`. `?settlementTagId=` when editing one: its own links are left out and returned as `currentAllocation` |
+| GET/POST | `/friends/:id/offsets` | List / create a netting without money (`{ lines: [{ tagId, amount }], note? }`, both sides equal) |
+| DELETE | `/friends/:id/offsets/:offsetId` | Undo a netting |
+| POST | `/friends/:id/write-offs` | Write off a leftover on an entry or settlement (`{ tagId, amount, reason? }`) |
+| DELETE | `/friends/:id/write-offs/:writeOffId` | Undo a write-off |
+| GET/POST | `/friends/:id/legacy-review` | Suggested amounts for amount-less settlements / apply them (all of the friend's at once) |
 | PATCH | `/friends/:id/ledger-preferences` | Bulk pin/unpin tags for ledger exports (`{ preferences: [{ tagId, included }] }`; `included: null` forgets the pin) |
 
 ### Transaction friend tags (`/transactions/:txId/tags`)
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/transactions/:txId/tags` | List tags on a transaction |
-| POST | `/transactions/:txId/tags` | Create tag (direction, amount, optional `linkedTransactionIds` for SETTLEMENT) |
-| PATCH | `/transactions/:txId/tags/:tagId` | Update tag |
+| POST | `/transactions/:txId/tags` | Create tag (direction, amount; for SETTLEMENT optional `allocations: [{ tagId, amount }]`, or legacy `linkedTransactionIds` — not both) |
+| PATCH | `/transactions/:txId/tags/:tagId` | Update tag. `allocations` replaces a settlement's allocations (`[]` = all on account); omit it to leave them alone |
 | DELETE | `/transactions/:txId/tags/:tagId` | Delete tag (cascades settlement links) |
 
 ### Categories (`/categories`)
@@ -112,6 +119,41 @@ Reads HDFC Excel (.xlsx) export:
 - `SETTLEMENT` direction tags may carry `linkedTransactionIds`; only non-settlement tags can be linked.
 - `transaction_friend_tags.ledger_included` is a *nullable* boolean: `NULL` = no saved export choice, `TRUE`/`FALSE` = pinned in/out of the friend's PDF ledger. Nullable is load-bearing — "never decided" must stay distinct from "decided to include".
 
+## Friend ledger: bill-wise settlement (`src/friends/friend-ledger.ts`)
+
+Every rule about what is pending, applied, netted, written off and owed lives in the pure
+`computeLedger(rows)` (tested in `friend-ledger.spec.ts`). `friend-ledger.store.ts` loads a
+friend's rows; `FriendsService` applies a proposed change in memory and saves only if
+`newErrors(before, after)` is empty and no *other* settlement flips direction
+(`assertLedgerChange`). Add new settlement rules there, not in the service.
+
+- **Entry** = OWES_ME / I_OWE tag. **Settlement** = SETTLEMENT tag (money moved).
+- **Link** (`settlement_links`, `amount`): a settlement applying `amount` to an entry —
+  Tally's "Agst Ref". Entries of *both* sides may be linked: the other side is netted in
+  (₹10,000 received + ₹14,400 the user owes clears ₹24,400 of what the friend owes). A link
+  to another SETTLEMENT is a **refund** of that settlement's money on account.
+- **Side** (`transaction_friend_tags.settlement_side`): `received` / `paid`, derived — the
+  larger side of linked entries, or the opposite of the refunded settlement — and stored by
+  `syncSettlementSides` after every write so SQL balance queries read one column
+  (`settlementPaidAmountSql`). Refunds of refunds are rejected (`refund_chain`).
+- **Offset** (`friend_offsets` + lines): nets entries of the two sides with no money; both
+  sides must be equal. Never changes the balance. Deleting an entry voids its whole offset.
+- **Write-off** (`tag_write_offs`): closes a leftover on an entry or a settlement with a
+  reason (round-off). Moves the balance by exactly its amount (`writeOffAdjustmentSql`).
+- **Legacy links** (`amount IS NULL`, made before amounts existed): **never backfill or
+  guess them.** Entry reads as settled, settlement as fully applied and `received`.
+  `suggestLegacyConversion` proposes amounts (oldest settlement first); the user accepts
+  them per friend via `GET/POST /friends/:id/legacy-review`, which converts all of that
+  friend's legacy settlements at once.
+- Reconciliation always holds: `net = openOwesMe − openIOwe − onAccountReceived +
+  onAccountPaid + legacyDifference`; `legacyDifference` is zero once legacy is reviewed.
+- Tag responses carry `pendingAmount`, `settledAmount`, `nettedAmount`, `writtenOffAmount`,
+  `settlementStatus`, `allocatedAmount`, `refundedAmount`, `unallocatedAmount`,
+  `settlementSide`, `settlementLegacy`, `balanceDelta` (the web ledger's running balance
+  uses it), `writeOffs`, `offsets`, and `linkAmount` on each linked tag.
+- Cascade deletes outside the service (import revert) can leave a broken ledger; display
+  clamps, and `newErrors` ignores pre-existing breakage so later edits are not blocked.
+
 ## Credit-card billing cycles
 
 - `card_transactions.statement_id IS NULL` means **unbilled** — spend made after the
@@ -124,6 +166,13 @@ Reads HDFC Excel (.xlsx) export:
 - All cycle date math lives in `src/cards/card-cycle.ts` (`cycleStartFor`,
   `openCycleRange`). A cycle is `[previous statement date + 1, statement date]`. The
   import path and the live card view both use it — they used to disagree by a day.
+- `GET /cards/import-schedule` says which statement to import next per credit card
+  (logic in `src/cards/card-import-schedule.ts`, pure and tested). The statement day is
+  inferred from past imports; `cards.statement_day` is hand-typed, can be wrong, and is
+  only the fallback for a card with no imports. Statements are keyed by month
+  (`YYYY-MM`), matching HDFC's `MonYYYY_BilledStatements_<last4>_…` export names. The
+  unified preview returns `skippedStatements` when an upload jumps past statements that
+  are out but not imported.
 - `recomputeStatementTotal` must not overwrite `total_amount` on a statement that has a
   `card_statement_imports` row: the bank's Total Amount Due includes carried-over dues
   and interest with no transaction rows. Only `paid_amount` always recomputes.

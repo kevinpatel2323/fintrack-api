@@ -7,6 +7,10 @@ import { Friend } from '../database/entities/friend.entity';
 import { Category } from '../database/entities/category.entity';
 import { TransactionFriendTag } from '../database/entities/transaction-friend-tag.entity';
 import { CardTransaction } from '../database/entities/card-transaction.entity';
+import {
+  settlementPaidAmountSql,
+  writeOffAdjustmentSql,
+} from '../friends/settlement-allocation';
 
 // A bank withdrawal linked to a CardPayment is a credit-card bill payment:
 // the real expenses are the covered card transactions, so counting the bill
@@ -316,6 +320,8 @@ export class DashboardService {
         `COALESCE(SUM(CASE WHEN tag.direction = 'SETTLEMENT' THEN tag.amount ELSE 0 END), 0)`,
         'totalSettlements',
       )
+      .addSelect(`COALESCE(SUM(${settlementPaidAmountSql('tag')}), 0)`, 'totalSettlementsPaid')
+      .addSelect(`COALESCE(SUM(${writeOffAdjustmentSql('tag')}), 0)`, 'writeOffAdjustment')
       // Left joins, not inner: a tag hangs off either a bank or a card
       // transaction, and an inner join on one would drop every tag of the
       // other kind from the balance entirely.
@@ -334,7 +340,18 @@ export class DashboardService {
         const totalIOwe = Number(row.totalIOwe);
         const totalOwesMe = Number(row.totalOwesMe);
         const totalSettlements = Number(row.totalSettlements);
-        const netBalance = totalOwesMe - totalIOwe - totalSettlements;
+        // Settlements the user paid out move the balance the other way; every
+        // other settlement reduces what the friend owes. Write-offs move it by
+        // exactly what they close. Same rules as the friend ledger
+        // (friends/friend-ledger.ts), which the friend page uses.
+        const totalSettlementsPaid = Number(row.totalSettlementsPaid ?? 0);
+        const writeOffAdjustment = Number(row.writeOffAdjustment ?? 0);
+        const netBalance =
+          totalOwesMe -
+          totalIOwe -
+          (totalSettlements - totalSettlementsPaid) +
+          totalSettlementsPaid +
+          writeOffAdjustment;
 
         return {
           friendId: row.friendId,
@@ -342,6 +359,7 @@ export class DashboardService {
           totalIOwe,
           totalOwesMe,
           totalSettlements,
+          totalSettlementsPaid,
           netBalance,
           lastTransactionDate: row.lastTransactionDate,
         };

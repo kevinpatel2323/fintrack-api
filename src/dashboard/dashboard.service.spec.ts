@@ -883,6 +883,79 @@ describe('DashboardService - Unit Tests', () => {
     });
 
     /**
+     * A settlement applied to entries the user owes is the user paying the
+     * friend back, so it moves the balance towards the friend instead of
+     * reducing what the friend owes.
+     */
+    it('treats settlements paid to a friend as reducing what the user owes', async () => {
+      const queryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            friendId: '1',
+            friendName: 'Dana',
+            // Dana paid ₹10,000 for me; I paid ₹4,000 of it back, applied to that entry.
+            totalIOwe: '10000',
+            totalOwesMe: '0',
+            totalSettlements: '4000',
+            totalSettlementsPaid: '4000',
+            lastTransactionDate: '2024-02-01',
+          },
+          {
+            friendId: '2',
+            friendName: 'Eve',
+            // Eve owes ₹3,000 and paid ₹1,000; I separately paid her ₹500 against ₹800 I owe.
+            totalIOwe: '800',
+            totalOwesMe: '3000',
+            totalSettlements: '1500',
+            totalSettlementsPaid: '500',
+            lastTransactionDate: '2024-02-02',
+          },
+        ]),
+      };
+      jest.spyOn(tagsRepository, 'createQueryBuilder').mockReturnValue(queryBuilder as any);
+
+      const result = await service.computeFriendBalances();
+
+      // Dana: 0 - 10000 - 0 + 4000 = -6000 (I still owe Dana ₹6,000)
+      expect(result.find((b: any) => b.friendName === 'Dana').netBalance).toBe(-6000);
+      // Eve: 3000 - 800 - 1000 + 500 = 1700
+      expect(result.find((b: any) => b.friendName === 'Eve').netBalance).toBe(1700);
+    });
+
+    it('moves the balance by exactly what was written off', async () => {
+      const queryBuilder = {
+        innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([
+          {
+            friendId: '1',
+            friendName: 'Yash',
+            // ₹5,299 owed; a ₹300 payment for the ₹299 entry, the extra ₹1 written off.
+            totalIOwe: '0',
+            totalOwesMe: '5299',
+            totalSettlements: '300',
+            totalSettlementsPaid: '0',
+            writeOffAdjustment: '1',
+            lastTransactionDate: '2024-03-01',
+          },
+        ]),
+      };
+      jest.spyOn(tagsRepository, 'createQueryBuilder').mockReturnValue(queryBuilder as any);
+
+      const [yash] = await service.computeFriendBalances();
+      // 5299 - 300 + 1: exactly the ₹5,000 still open.
+      expect(yash.netBalance).toBe(5000);
+    });
+
+    /**
      * Test filtering of zero balances
      * 
      * Friends with a net balance of zero should be filtered out from the results,
