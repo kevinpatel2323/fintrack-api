@@ -10,6 +10,7 @@ import {
 import { Transaction } from './transaction.entity';
 import { CardTransaction } from './card-transaction.entity';
 import { Friend } from './friend.entity';
+import { EntryGroup } from './entry-group.entity';
 
 const numericTransformer = {
   to: (value: number) => value,
@@ -87,6 +88,19 @@ export class TransactionFriendTag {
    */
   @Column({ name: 'settlement_side', type: 'text', nullable: true })
   settlementSide!: 'received' | 'paid' | null;
+
+  /**
+   * The entry group this entry is bundled into, if any ("Ketul's wedding").
+   * Only entries (OWES_ME / I_OWE / NOTHING_OUTSTANDING) are grouped, never
+   * settlements. NULL means ungrouped.
+   */
+  @Index()
+  @Column({ name: 'entry_group_id', type: 'bigint', nullable: true })
+  entryGroupId!: string | null;
+
+  @ManyToOne(() => EntryGroup, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'entry_group_id' })
+  entryGroup?: EntryGroup | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;

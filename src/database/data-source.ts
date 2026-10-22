@@ -9,6 +9,7 @@ import { TransactionFriendTag } from './entities/transaction-friend-tag.entity';
 import { SettlementLink } from './entities/settlement-link.entity';
 import { TagWriteOff } from './entities/tag-write-off.entity';
 import { FriendOffset, FriendOffsetLine } from './entities/friend-offset.entity';
+import { EntryGroup } from './entities/entry-group.entity';
 import { Category } from './entities/category.entity';
 import { Subscription } from './entities/subscription.entity';
 import { Card } from './entities/card.entity';
@@ -33,6 +34,7 @@ const AppDataSource = new DataSource({
     TagWriteOff,
     FriendOffset,
     FriendOffsetLine,
+    EntryGroup,
     Category,
     Subscription,
     Card,

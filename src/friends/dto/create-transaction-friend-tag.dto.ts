@@ -52,4 +52,11 @@ export class CreateTransactionFriendTagDto {
   @ValidateNested({ each: true })
   @Type(() => SettlementAllocationDto)
   allocations?: SettlementAllocationDto[];
+
+  /** The friend's entry group to put this entry in ("Ketul's wedding"). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @IsPositive()
+  entryGroupId?: number;
 }

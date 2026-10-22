@@ -25,6 +25,8 @@ import { SettlementAllocationDto } from './dto/settlement-allocation.dto';
 import { CreateOffsetDto } from './dto/create-offset.dto';
 import { CreateWriteOffDto } from './dto/create-write-off.dto';
 import { ApplyLegacyReviewDto } from './dto/apply-legacy-review.dto';
+import { CreateEntryGroupDto, UpdateEntryGroupDto } from './dto/entry-group.dto';
+import { EntryGroup } from '../database/entities/entry-group.entity';
 import { TagWriteOff } from '../database/entities/tag-write-off.entity';
 import { FriendOffset, FriendOffsetLine } from '../database/entities/friend-offset.entity';
 import { fromPaise, toPaise } from './settlement-allocation';
@@ -32,6 +34,7 @@ import {
   LedgerRows,
   SettlementFigures,
   computeLedger,
+  groupFigures,
   newErrors,
   suggestLegacyConversion,
   withSettlementLinks,
@@ -71,7 +74,7 @@ function subjectWhere(subject: TagSubject) {
 }
 
 /** Relations to hydrate so a tag can always render its subject. */
-const SUBJECT_RELATIONS = ['transaction', 'cardTransaction', 'cardTransaction.card'];
+const SUBJECT_RELATIONS = ['transaction', 'cardTransaction', 'cardTransaction.card', 'entryGroup'];
 
 /**
  * Card transactions rendered in the shape the friend ledger already expects
@@ -548,12 +551,17 @@ export class FriendsService {
       }
     }
 
+    if (dto.entryGroupId !== undefined) {
+      await this.assertGroupTarget(String(dto.friendId), String(dto.entryGroupId), dto.direction);
+    }
+
     const tag = this.tagRepository.create({
       ...subjectWhere(subject),
       friendId: String(dto.friendId),
       amount: dto.amount,
       direction: dto.direction,
       note: dto.note ?? null,
+      entryGroupId: dto.entryGroupId !== undefined ? String(dto.entryGroupId) : null,
     });
 
     // The tag and its links land together, so a failed link never leaves a
@@ -644,6 +652,19 @@ export class FriendsService {
         throw new ConflictException('Move the settlement to the other friend first, then apply it.');
       }
     }
+    // Group membership: an entry stays in its group unless told otherwise, so
+    // it has to stay groupable — same friend, not a settlement.
+    const nextGroupId =
+      dto.entryGroupId === undefined
+        ? tag.entryGroupId
+        : dto.entryGroupId === null
+          ? null
+          : String(dto.entryGroupId);
+    if (nextGroupId) {
+      if (nextGroupId !== tag.entryGroupId || movingFriend || nextDirection !== tag.direction) {
+        await this.assertGroupTarget(nextFriendId, nextGroupId, nextDirection, movingFriend);
+      }
+    }
     if (movingFriend && (await this.hasLedgerAttachments(tag))) {
       throw new ConflictException(
         'This entry has settlement amounts, netting or write-offs attached. Remove them before moving it to another friend.',
@@ -713,8 +734,12 @@ export class FriendsService {
         amount: nextAmount,
         direction: nextDirection,
         note: dto.note ?? tag.note,
+        entryGroupId: nextGroupId,
       });
       const saved = await em.save(updated);
+      if (tag.entryGroupId && tag.entryGroupId !== nextGroupId) {
+        await this.pruneEmptyGroups(em, [String(tag.entryGroupId)]);
+      }
       await this.syncSides(em, [String(tag.friendId), nextFriendId]);
       return saved;
     });
@@ -743,6 +768,7 @@ export class FriendsService {
       const offsetIds = [...new Set(lines.map((l) => String(l.offsetId)))];
       if (offsetIds.length > 0) await em.delete(FriendOffset, { id: In(offsetIds) });
       await em.delete(TransactionFriendTag, { id: tagId });
+      if (tag.entryGroupId) await this.pruneEmptyGroups(em, [String(tag.entryGroupId)]);
       await this.syncSides(em, [String(tag.friendId)]);
     });
     return { deleted: true };
@@ -767,6 +793,7 @@ export class FriendsService {
         .leftJoinAndSelect('tag.transaction', 'transaction')
         .leftJoinAndSelect('tag.cardTransaction', 'cardTransaction')
         .leftJoinAndSelect('cardTransaction.card', 'card')
+        .leftJoinAndSelect('tag.entryGroup', 'entryGroup')
         .where('tag.friend_id = :friendId', { friendId });
 
       if (query?.start) {
@@ -1028,10 +1055,22 @@ export class FriendsService {
     const byDate = (a: { id: string }, b: { id: string }) =>
       subjectDate(loaded.tags.get(String(a.id))!).localeCompare(subjectDate(loaded.tags.get(String(b.id))!)) ||
       Number(a.id) - Number(b.id);
+    // Groups with open entries here, so a picker can show them as one row.
+    const sortedDues = dues.sort(byDate);
+    const groups = new Map<string, { id: string; title: string; entryIds: string[] }>();
+    for (const due of sortedDues) {
+      const tag = loaded.tags.get(String(due.id));
+      if (!tag?.entryGroupId || !tag.entryGroup) continue;
+      const id = String(tag.entryGroupId);
+      if (!groups.has(id)) groups.set(id, { id, title: tag.entryGroup.title, entryIds: [] });
+      groups.get(id)!.entryIds.push(String(due.id));
+    }
+
     return {
       count: dues.length,
-      data: dues.sort(byDate),
+      data: sortedDues,
       refundable: refundable.sort(byDate),
+      groups: [...groups.values()],
       balance: computeLedger(loaded.rows).totals,
     };
   }
@@ -1257,5 +1296,186 @@ export class FriendsService {
       needingReview: result.reduce((s, f) => s + f.needingReview, 0),
       friends: result,
     };
+  }
+
+  // ── Entry groups ───────────────────────────────────────────────────────
+  // Several of a friend's entries bundled under one title. The entries keep
+  // everything of their own; a group is a title plus membership, and its
+  // figures are always derived from its entries (`groupFigures`).
+
+  private static readonly GROUPABLE = new Set<string>([
+    TransactionFriendDirection.OwesMe,
+    TransactionFriendDirection.IOwe,
+    TransactionFriendDirection.NothingOutstanding,
+  ]);
+
+  private normalizeGroupTitle(raw: string): string {
+    const title = String(raw ?? '').replace(/\s+/g, ' ').trim();
+    if (!title) throw new BadRequestException('Give the group a title.');
+    return title;
+  }
+
+  private async assertGroupTitleFree(friendId: string, title: string, exceptGroupId?: string) {
+    const clash = await this.dataSource
+      .getRepository(EntryGroup)
+      .createQueryBuilder('g')
+      .where('g.friend_id = :friendId', { friendId })
+      .andWhere('lower(btrim(g.title)) = lower(:title)', { title })
+      .andWhere(exceptGroupId ? 'g.id <> :exceptGroupId' : '1=1', { exceptGroupId })
+      .getOne();
+    if (clash) {
+      throw new ConflictException(`This friend already has a group called "${clash.title}".`);
+    }
+  }
+
+  /** Throws unless an entry of `direction` for `friendId` can go into `groupId`. */
+  private async assertGroupTarget(
+    friendId: string,
+    groupId: string,
+    direction: string,
+    movingFriend = false,
+  ) {
+    const group = await this.dataSource.getRepository(EntryGroup).findOne({ where: { id: groupId } });
+    if (!group || String(group.friendId) !== friendId) {
+      throw new ConflictException(
+        movingFriend
+          ? 'This entry is in a group. Take it out of the group before moving it to another friend.'
+          : 'That group does not exist for this friend.',
+      );
+    }
+    if (!FriendsService.GROUPABLE.has(direction)) {
+      throw new ConflictException(
+        'Only entries can be grouped, not settlements. Take it out of its group first.',
+      );
+    }
+  }
+
+  /** Throws unless every tag is one of this friend's entries and free to join `groupId`. */
+  private async assertGroupable(friendId: string, tagIds: string[], groupId?: string) {
+    if (new Set(tagIds).size !== tagIds.length) {
+      throw new ConflictException('The same entry is listed more than once.');
+    }
+    const tags = tagIds.length
+      ? await this.tagRepository.find({ where: { id: In(tagIds) }, relations: ['entryGroup'] })
+      : [];
+    const byId = new Map(tags.map((t) => [String(t.id), t]));
+    for (const id of tagIds) {
+      const tag = byId.get(id);
+      if (!tag || String(tag.friendId) !== friendId) {
+        throw new ConflictException(`Entry #${id} does not exist or belongs to a different friend.`);
+      }
+      if (!FriendsService.GROUPABLE.has(tag.direction)) {
+        throw new ConflictException(`Entry #${id} is a settlement; only entries can be grouped.`);
+      }
+      if (tag.entryGroupId && tag.entryGroupId !== groupId) {
+        throw new ConflictException(
+          `Entry #${id} is already in "${tag.entryGroup?.title ?? 'another group'}". Take it out of that group first.`,
+        );
+      }
+    }
+  }
+
+  /** Deletes groups that no longer have any entries. */
+  private async pruneEmptyGroups(em: EntityManager, groupIds: string[]) {
+    for (const id of new Set(groupIds)) {
+      const left = await em.count(TransactionFriendTag, { where: { entryGroupId: id } });
+      if (left === 0) await em.delete(EntryGroup, { id });
+    }
+  }
+
+  /** The friend's groups, each with its derived figures and its entries, oldest first. */
+  async listGroups(friendId: string) {
+    await this.requireFriend(friendId);
+    const groups = await this.dataSource.getRepository(EntryGroup).find({ where: { friendId } });
+    if (groups.length === 0) return [];
+    const loaded = await loadLedger(this.dataSource.manager, [friendId]);
+    const ledger = computeLedger(loaded.rows);
+
+    return groups
+      .map((group) => {
+        const members = [...loaded.tags.values()]
+          .filter((t) => t.entryGroupId === String(group.id))
+          .sort((a, b) => subjectDate(a).localeCompare(subjectDate(b)) || Number(a.id) - Number(b.id));
+        const memberIds = members.map((t) => String(t.id));
+        const dates = members.map(subjectDate).filter(Boolean);
+        return {
+          id: String(group.id),
+          friendId: String(group.friendId),
+          title: group.title,
+          createdAt: group.createdAt,
+          dateFrom: dates[0] ?? null,
+          dateTo: dates[dates.length - 1] ?? null,
+          ...groupFigures(memberIds, ledger, loaded.rows.tags),
+          entries: members.map((t) => {
+            const fig = ledger.figures.get(String(t.id));
+            const { kind: _kind, ...figures } = fig ?? { kind: 'other' as const, balanceDelta: 0 };
+            return { ...this.shapeTag(t), ...figures };
+          }),
+        };
+      })
+      .sort((a, b) => String(a.dateFrom ?? '').localeCompare(String(b.dateFrom ?? '')));
+  }
+
+  async createGroup(friendId: string, dto: CreateEntryGroupDto) {
+    await this.requireFriend(friendId);
+    const title = this.normalizeGroupTitle(dto.title);
+    const tagIds = dto.tagIds.map(String);
+    await this.assertGroupTitleFree(friendId, title);
+    await this.assertGroupable(friendId, tagIds);
+
+    const id = await this.dataSource.transaction(async (em) => {
+      const group = await em.save(em.create(EntryGroup, { friendId, title }));
+      await em.update(TransactionFriendTag, { id: In(tagIds) }, { entryGroupId: String(group.id) });
+      return String(group.id);
+    });
+    return (await this.listGroups(friendId)).find((g) => g.id === id);
+  }
+
+  /**
+   * Renames a group and/or moves entries in or out. A group left with no
+   * entries is deleted — there is nothing left to name.
+   */
+  async updateGroup(friendId: string, groupId: string, dto: UpdateEntryGroupDto) {
+    const group = await this.dataSource
+      .getRepository(EntryGroup)
+      .findOne({ where: { id: groupId, friendId } });
+    if (!group) throw new NotFoundException('Group not found.');
+
+    const title = dto.title !== undefined ? this.normalizeGroupTitle(dto.title) : undefined;
+    if (title !== undefined) await this.assertGroupTitleFree(friendId, title, groupId);
+    const add = (dto.addTagIds ?? []).map(String);
+    const remove = (dto.removeTagIds ?? []).map(String);
+    if (add.some((id) => remove.includes(id))) {
+      throw new ConflictException('An entry cannot be added and removed at once.');
+    }
+    await this.assertGroupable(friendId, add, groupId);
+    if (remove.length) {
+      const members = await this.tagRepository.find({ where: { id: In(remove), entryGroupId: groupId } });
+      if (members.length !== new Set(remove).size) {
+        throw new ConflictException('Only entries in this group can be taken out of it.');
+      }
+    }
+
+    await this.dataSource.transaction(async (em) => {
+      if (title !== undefined) await em.update(EntryGroup, { id: groupId }, { title });
+      if (add.length) await em.update(TransactionFriendTag, { id: In(add) }, { entryGroupId: groupId });
+      if (remove.length) await em.update(TransactionFriendTag, { id: In(remove) }, { entryGroupId: null });
+      await this.pruneEmptyGroups(em, [groupId]);
+    });
+    const updated = (await this.listGroups(friendId)).find((g) => g.id === groupId);
+    return updated ?? { id: groupId, deleted: true };
+  }
+
+  /** Ungroups: the group goes, every entry stays exactly as it was. */
+  async deleteGroup(friendId: string, groupId: string) {
+    const group = await this.dataSource
+      .getRepository(EntryGroup)
+      .findOne({ where: { id: groupId, friendId } });
+    if (!group) throw new NotFoundException('Group not found.');
+    await this.dataSource.transaction(async (em) => {
+      await em.update(TransactionFriendTag, { entryGroupId: groupId }, { entryGroupId: null });
+      await em.delete(EntryGroup, { id: groupId });
+    });
+    return { deleted: true };
   }
 }

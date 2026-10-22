@@ -536,3 +536,68 @@ export function suggestLegacyConversion(rows: LedgerRows): {
 
   return { suggestions, rowsAfter, netBefore: before.totals.net, netAfter: after.totals.net };
 }
+
+// ── Entry groups ─────────────────────────────────────────────────────────────
+
+export interface GroupFigures {
+  entryCount: number;
+  /** What the entries add up to, signed: positive when the friend owes the user. */
+  totalAmount: number;
+  owesMeAmount: number;
+  iOweAmount: number;
+  pendingOwesMe: number;
+  pendingIOwe: number;
+  /** What is still open, signed like `totalAmount`. */
+  pendingNet: number;
+  /** Settled, netted or written off so far, across both sides. */
+  clearedAmount: number;
+  /** open: nothing cleared yet · partial · settled: nothing left open. */
+  status: DueStatus;
+  /** The group's effect on the balance — the sum of its entries'. */
+  balanceDelta: number;
+}
+
+/**
+ * A group's figures, derived only from its entries' own figures in `ledger`.
+ * Nothing about a group is stored but its title and membership, so these can
+ * never drift from the entries. Entries settled by legacy (amount-less) links
+ * count as fully cleared, exactly as they do on their own.
+ */
+export function groupFigures(memberIds: string[], ledger: Ledger, tags: LedgerTag[]): GroupFigures {
+  const byId = new Map(tags.map((t) => [String(t.id), t]));
+  let owesMe = 0;
+  let iOwe = 0;
+  let pendingOwesMe = 0;
+  let pendingIOwe = 0;
+  let delta = 0;
+  let count = 0;
+  for (const id of memberIds) {
+    const tag = byId.get(String(id));
+    const fig = ledger.figures.get(String(id));
+    if (!tag || !fig) continue;
+    count += 1;
+    delta += toPaise(fig.balanceDelta);
+    if (fig.kind !== 'due') continue;
+    if (tag.direction === 'OWES_ME') {
+      owesMe += toPaise(tag.amount);
+      pendingOwesMe += toPaise(fig.pendingAmount);
+    } else {
+      iOwe += toPaise(tag.amount);
+      pendingIOwe += toPaise(fig.pendingAmount);
+    }
+  }
+  const pending = pendingOwesMe + pendingIOwe;
+  const cleared = owesMe + iOwe - pending;
+  return {
+    entryCount: count,
+    totalAmount: fromPaise(owesMe - iOwe),
+    owesMeAmount: fromPaise(owesMe),
+    iOweAmount: fromPaise(iOwe),
+    pendingOwesMe: fromPaise(pendingOwesMe),
+    pendingIOwe: fromPaise(pendingIOwe),
+    pendingNet: fromPaise(pendingOwesMe - pendingIOwe),
+    clearedAmount: fromPaise(cleared),
+    status: pending === 0 ? 'settled' : cleared <= 0 ? 'open' : 'partial',
+    balanceDelta: fromPaise(delta),
+  };
+}

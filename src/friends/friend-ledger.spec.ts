@@ -5,6 +5,7 @@ import {
   LedgerTag,
   SettlementFigures,
   computeLedger,
+  groupFigures,
   newErrors,
   suggestLegacyConversion,
   withSettlementLinks,
@@ -384,5 +385,55 @@ describe('ledger invariants (property-based)', () => {
         return withOffset.errors.length === 0 && withOffset.totals.net === without.totals.net;
       }),
     );
+  });
+});
+
+describe('groupFigures', () => {
+  // Yash's "Ketul's wedding": four small entries he owes, one outfit the user owes,
+  // and a note-only entry.
+  const ketul = [
+    owesMe('47', 230, '2025-11-30'),
+    owesMe('34', 159, '2025-12-06'),
+    iOwe('49', 8800, '2025-12-07'),
+    owesMe('18', 1900, '2026-01-10'),
+    { id: '20', direction: 'NOTHING_OUTSTANDING', amount: 0, date: '2026-01-13' },
+  ];
+  const members = ketul.map((t) => t.id);
+
+  it('totals the entries as a net amount and starts open', () => {
+    const l = computeLedger(rows({ tags: ketul }));
+    expect(groupFigures(members, l, ketul)).toEqual({
+      entryCount: 5,
+      totalAmount: -6511,
+      owesMeAmount: 2289,
+      iOweAmount: 8800,
+      pendingOwesMe: 2289,
+      pendingIOwe: 8800,
+      pendingNet: -6511,
+      clearedAmount: 0,
+      status: 'open',
+      balanceDelta: -6511,
+    });
+  });
+
+  it('is settled once one payment clears it, netting the two sides inside', () => {
+    // The user pays Yash ₹6,511: the outfit in full, his four entries netted in.
+    const tags = [...ketul, settlement('99', 6511, '2026-02-01')];
+    const l = computeLedger(
+      rows({
+        tags,
+        links: [link('99', '49', 8800), link('99', '47', 230), link('99', '34', 159), link('99', '18', 1900)],
+      }),
+    );
+    expect(l.errors).toEqual([]);
+    expect(groupFigures(members, l, tags)).toMatchObject({ pendingNet: 0, clearedAmount: 11089, status: 'settled' });
+    // Grouping never moves the balance: the group's effect is its entries'.
+    expect(l.totals.net).toBe(0);
+  });
+
+  it('is partly settled when some of it is cleared', () => {
+    const tags = [...ketul, settlement('99', 1900, '2026-02-01')];
+    const l = computeLedger(rows({ tags, links: [link('99', '18', 1900)] }));
+    expect(groupFigures(members, l, tags)).toMatchObject({ pendingNet: -8411, clearedAmount: 1900, status: 'partial' });
   });
 });

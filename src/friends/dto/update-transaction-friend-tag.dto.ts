@@ -9,6 +9,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { TransactionFriendDirection } from '../../database/entities/transaction-friend-tag.entity';
@@ -59,4 +60,12 @@ export class UpdateTransactionFriendTagDto {
   @ValidateNested({ each: true })
   @Type(() => SettlementAllocationDto)
   allocations?: SettlementAllocationDto[];
+
+  /** The entry group to put this entry in; null takes it out of its group. */
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @IsPositive()
+  entryGroupId?: number | null;
 }

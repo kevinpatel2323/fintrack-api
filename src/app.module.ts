@@ -12,6 +12,7 @@ import { TransactionFriendTag } from './database/entities/transaction-friend-tag
 import { SettlementLink } from './database/entities/settlement-link.entity';
 import { TagWriteOff } from './database/entities/tag-write-off.entity';
 import { FriendOffset, FriendOffsetLine } from './database/entities/friend-offset.entity';
+import { EntryGroup } from './database/entities/entry-group.entity';
 import { Category } from './database/entities/category.entity';
 import { Subscription } from './database/entities/subscription.entity';
 import { Card } from './database/entities/card.entity';
@@ -51,6 +52,7 @@ import { OriginCsrfGuard } from './auth/origin-csrf.guard';
         TagWriteOff,
         FriendOffset,
         FriendOffsetLine,
+        EntryGroup,
         Category,
         Subscription,
         Card,

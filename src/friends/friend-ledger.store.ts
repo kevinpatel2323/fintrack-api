@@ -31,7 +31,7 @@ export async function loadLedger(em: EntityManager, friendIds: string[]): Promis
   const [tags, links, offsetLines, writeOffs] = await Promise.all([
     em.getRepository(TransactionFriendTag).find({
       where: { friendId: In(ids) },
-      relations: ['transaction', 'cardTransaction', 'cardTransaction.card'],
+      relations: ['transaction', 'cardTransaction', 'cardTransaction.card', 'entryGroup'],
     }),
     em
       .getRepository(SettlementLink)

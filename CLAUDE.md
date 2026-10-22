@@ -62,7 +62,9 @@ src/
 | GET | `/friends/:id/summary` | Net balance and the reconciled bill-wise view: `openOwesMe`, `openIOwe`, `onAccountReceived`/`Paid`, `legacyDifference`, `legacyNeedingReview` |
 | GET | `/friends/:id/transactions` | Tagged transactions (supports `?start=&end=`) |
 | GET | `/friends/:id/linkable-transactions` | Non-settlement tags available to link |
-| GET | `/friends/:id/open-dues` | What a settlement can be applied to: `data` (entries pending on either side, oldest first), `refundable` (other settlements' money on account), `balance`. `?settlementTagId=` when editing one: its own links are left out and returned as `currentAllocation` |
+| GET | `/friends/:id/open-dues` | What a settlement can be applied to: `data` (entries pending on either side, oldest first), `refundable` (other settlements' money on account), `groups` (`{ id, title, entryIds }` for entry groups with open entries), `balance`. `?settlementTagId=` when editing one: its own links are left out and returned as `currentAllocation` |
+| GET/POST | `/friends/:id/groups` | Entry groups with their derived figures and entries / create one (`{ title, tagIds }`, at least 2) |
+| PATCH/DELETE | `/friends/:id/groups/:groupId` | Rename / add / remove entries (`{ title?, addTagIds?, removeTagIds? }`; emptied → deleted, returns `{ id, deleted: true }`) / ungroup (entries stay) |
 | GET/POST | `/friends/:id/offsets` | List / create a netting without money (`{ lines: [{ tagId, amount }], note? }`, both sides equal) |
 | DELETE | `/friends/:id/offsets/:offsetId` | Undo a netting |
 | POST | `/friends/:id/write-offs` | Write off a leftover on an entry or settlement (`{ tagId, amount, reason? }`) |
@@ -74,8 +76,8 @@ src/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/transactions/:txId/tags` | List tags on a transaction |
-| POST | `/transactions/:txId/tags` | Create tag (direction, amount; for SETTLEMENT optional `allocations: [{ tagId, amount }]`, or legacy `linkedTransactionIds` — not both) |
-| PATCH | `/transactions/:txId/tags/:tagId` | Update tag. `allocations` replaces a settlement's allocations (`[]` = all on account); omit it to leave them alone |
+| POST | `/transactions/:txId/tags` | Create tag (direction, amount; for SETTLEMENT optional `allocations: [{ tagId, amount }]`, or legacy `linkedTransactionIds` — not both; otherwise optional `entryGroupId`) |
+| PATCH | `/transactions/:txId/tags/:tagId` | Update tag. `allocations` replaces a settlement's allocations (`[]` = all on account); omit it to leave them alone. `entryGroupId` moves it into a group, `null` takes it out |
 | DELETE | `/transactions/:txId/tags/:tagId` | Delete tag (cascades settlement links) |
 
 ### Categories (`/categories`)
@@ -153,6 +155,23 @@ friend's rows; `FriendsService` applies a proposed change in memory and saves on
   uses it), `writeOffs`, `offsets`, and `linkAmount` on each linked tag.
 - Cascade deletes outside the service (import revert) can leave a broken ledger; display
   clamps, and `newErrors` ignores pre-existing breakage so later edits are not blocked.
+
+## Entry groups (`entry_groups`)
+
+Several of one friend's entries under one title ("Ketul's wedding"), shown and settled
+as one. **A group is only a label over its entries:** it stores no amounts, and
+everything about it (`groupFigures` in `friend-ledger.ts`: net total, pending, status)
+is derived from its entries. Grouping, ungrouping or moving entries never changes a
+balance — settlements still link to the individual entries.
+
+- `transaction_friend_tags.entry_group_id` (FK, `ON DELETE SET NULL`): one group per
+  entry. Only `OWES_ME` / `I_OWE` / `NOTHING_OUTSTANDING` entries of the group's friend
+  can join; a grouped entry cannot become a settlement or move to another friend.
+- Titles are unique per friend, ignoring case and spacing
+  (`uq_entry_groups_friend_title` on `lower(btrim(title))`).
+- A group left with no entries (removed, deleted, or import revert) is deleted
+  (`pruneEmptyGroups`).
+- Tag responses carry `entryGroupId` and `entryGroup: { id, title }`.
 
 ## Credit-card billing cycles
 

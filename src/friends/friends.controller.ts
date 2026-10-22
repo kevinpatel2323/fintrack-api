@@ -20,6 +20,7 @@ import { UpdateLedgerPreferencesDto } from './dto/update-ledger-preferences.dto'
 import { CreateOffsetDto } from './dto/create-offset.dto';
 import { CreateWriteOffDto } from './dto/create-write-off.dto';
 import { ApplyLegacyReviewDto } from './dto/apply-legacy-review.dto';
+import { CreateEntryGroupDto, UpdateEntryGroupDto } from './dto/entry-group.dto';
 
 @Controller('friends')
 export class FriendsController {
@@ -152,5 +153,34 @@ export class FriendsController {
     @Body() dto: ApplyLegacyReviewDto,
   ) {
     return this.friendsService.applyLegacyReview(String(id), dto);
+  }
+
+  // ── Entry groups ("Ketul's wedding") ───────────────────────────────────
+  @Get(':id/groups')
+  async listGroups(@Param('id', ParseIntPipe) id: number) {
+    const data = await this.friendsService.listGroups(String(id));
+    return { count: data.length, data };
+  }
+
+  @Post(':id/groups')
+  async createGroup(@Param('id', ParseIntPipe) id: number, @Body() dto: CreateEntryGroupDto) {
+    return this.friendsService.createGroup(String(id), dto);
+  }
+
+  @Patch(':id/groups/:groupId')
+  async updateGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('groupId', ParseIntPipe) groupId: number,
+    @Body() dto: UpdateEntryGroupDto,
+  ) {
+    return this.friendsService.updateGroup(String(id), String(groupId), dto);
+  }
+
+  @Delete(':id/groups/:groupId')
+  async deleteGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('groupId', ParseIntPipe) groupId: number,
+  ) {
+    return this.friendsService.deleteGroup(String(id), String(groupId));
   }
 }
