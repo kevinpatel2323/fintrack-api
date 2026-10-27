@@ -11,6 +11,7 @@ import { CardsController } from './cards.controller';
 import { CardsService } from './cards.service';
 import { CardImportsService } from './card-imports.service';
 import { CardLinkService } from './card-link.service';
+import { CardUnbilledService } from './card-unbilled.service';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { CardLinkService } from './card-link.service';
     FriendsModule,
   ],
   controllers: [CardsController],
-  providers: [CardsService, CardImportsService, CardLinkService],
+  providers: [CardsService, CardImportsService, CardLinkService, CardUnbilledService],
   exports: [CardsService, CardImportsService, CardLinkService],
 })
 export class CardsModule {}

@@ -18,6 +18,8 @@ import {
   CardImportsService,
   parseConfirmedMatches,
 } from './card-imports.service';
+import { CardUnbilledService } from './card-unbilled.service';
+import { UnbilledPasteDto } from './dto/unbilled-paste.dto';
 import { CreateCardDto } from './dto/create-card.dto';
 import { UpdateCardDto } from './dto/update-card.dto';
 import {
@@ -43,6 +45,7 @@ export class CardsController {
     private readonly cardsService: CardsService,
     private readonly cardImportsService: CardImportsService,
     private readonly friendsService: FriendsService,
+    private readonly cardUnbilledService: CardUnbilledService,
   ) {}
 
   // ── CC statement imports ─────────────────────────────────────────────────
@@ -71,6 +74,23 @@ export class CardsController {
       parseConfirmedMatches(confirmedMatches),
     );
     return { message: 'Import complete', ...result };
+  }
+
+  // ── Unbilled spend pasted off HDFC's Unbilled Transactions page ──────────
+  @Post(':id/unbilled/paste/preview')
+  async previewUnbilledPaste(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UnbilledPasteDto,
+  ) {
+    return this.cardUnbilledService.preview(String(id), dto.text);
+  }
+
+  @Post(':id/unbilled/paste')
+  async saveUnbilledPaste(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UnbilledPasteDto,
+  ) {
+    return this.cardUnbilledService.save(String(id), dto.text);
   }
 
   @Get(':id/imports')

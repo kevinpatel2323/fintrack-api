@@ -200,6 +200,13 @@ balance — settlements still link to the individual entries.
   rows keep `card_import_id = NULL`, which is what makes revert non-destructive —
   revert deletes by `card_import_id` and un-bills the rest.
 
+- HDFC has no download for unbilled spend, so `POST /cards/:id/unbilled/paste` (and
+  `/preview`) take the text copied off its Unbilled Transactions page (`{ text }`).
+  `parsers/hdfc-unbilled-paste.parser.ts` rejects a paste whose rows do not add up to
+  the page's Total Spent / Total Credited. `CardUnbilledService` inserts only rows not
+  already on the card (±1 day, equal paise) and skips dates inside a billed cycle; the
+  rows are plain unbilled rows, so the statement import bills them in place.
+
 ## Subscription RRULE rules
 
 - `rrule` column stores the RRULE body **without** the `RRULE:` prefix (e.g. `FREQ=MONTHLY;BYMONTHDAY=15`).
