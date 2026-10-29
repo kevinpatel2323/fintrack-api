@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import type { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -13,6 +14,15 @@ async function bootstrap() {
   // Vercel's edge rather than the proxy address.
   app.use(helmet());
   app.use(cookieParser());
+  // The phone's routes carry one SMS at a time; anything bigger is refused
+  // before it is parsed (the DTOs cap each field as well).
+  app.use('/api/v1', (req: Request, res: Response, next: NextFunction) => {
+    if (Number(req.headers['content-length'] ?? 0) > 16 * 1024) {
+      res.status(413).json({ status: 'invalid', message: 'Request too large.' });
+      return;
+    }
+    next();
+  });
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
   // Drain the TypeORM connection pool on SIGTERM/SIGINT so every restart
   // (nest --watch recompiles, production redeploys) releases its connections

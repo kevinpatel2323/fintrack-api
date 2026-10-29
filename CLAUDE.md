@@ -26,6 +26,7 @@ src/
   categories/                Category CRUD (name, color, icon)
   dashboard/                 Read-only aggregation endpoints for dashboard widgets
   subscriptions/             Subscription CRUD + calendar expansion via RRULE
+  transaction-memos/         Bank SMS + typed memos from the iPhone shortcut; paired devices
   database/
     entities/                TypeORM entity definitions
     migrations/              Sequential migrations (1707000000000-… series)
@@ -102,6 +103,49 @@ All endpoints are read-only. Accept optional `?startDate=&endDate=&accountNumber
 CRUD at `/subscriptions`. Calendar endpoint: `GET /subscriptions/calendar?start=YYYY-MM-DD&end=YYYY-MM-DD`.  
 Returns all active subscription occurrences in range, expanded from RRULE, excluding `exdates`.  
 Hard limits: 10,000 occurrences per subscription, 50,000 total per request.
+
+### Transaction memos — web (`/transaction-memos`, passkey session)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/transaction-memos` | List (`?tab=all\|no-memo\|debit\|credit&q=&page=&pageSize=`), newest first |
+| GET | `/transaction-memos/summary` | `{ withoutMemo, total, lastReceivedAt }` (nav badge) |
+| GET/PATCH/DELETE | `/transaction-memos/:id` | Detail with the unsealed SMS and location / set the memo (`{ memo: string\|null }`) / delete |
+| POST | `/transaction-memos/:id/reparse`, `/transaction-memos/reparse-all` | Re-read one / every row from an older parser or unreadable |
+| POST | `/transaction-memos/devices/pair-code` | Open a 10-minute pairing window: `{ code, setupText: 'fintrack:pair:…', expiresAt }` |
+| GET/DELETE | `/transaction-memos/devices[/:id]` | Paired devices (`pairing\|active\|revoked`, last contact, waiting count) / revoke |
+
+### Transaction memos — phone (`/api/v1`, device key)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/devices/pair` | `{ code, name? }` → `{ status: 'paired', key }`. 404 unless a window is open |
+| GET | `/api/v1/devices/me` | `{ status: 'ok' }` for a live key |
+| POST | `/api/v1/memos` | Upsert by `submissionId`: an SMS (+ memo), or a memo alone for an SMS already sent |
+| GET | `/api/v1/memos/pending` | This device's last-24 h rows with no memo, as one-line summaries |
+
+## Transaction memos (`src/transaction-memos/`)
+
+The Fintrack Memos iPhone shortcut sends each bank, UPI or card SMS with the memo typed
+when it arrived. **Memos are reference notes only — they never create or change a
+transaction.** The brand is Fintrack only; never name the third-party shortcut it grew from.
+
+- **Never lose an SMS.** Every `transaction_memos` column but `id`/`created_at` is nullable;
+  `sms-parser.ts` never refuses (only reports `parsed`/`partial`/`unreadable`), a parser
+  exception still stores the row, and any server failure on a device route answers
+  `{ status: 'retry' }` (503) so the phone keeps its outbox file. Bump
+  `SMS_PARSER_VERSION` with parser changes; `reparse-all` re-reads older rows.
+- **Idempotent.** `submission_id` and `content_hash` (sender + text + arrival time) are
+  unique; a repeat returns the existing row and only fills in a missing memo or location.
+- **Device replies** (`device-reply.filter.ts`): `accepted`, `refused` (OTP, nothing
+  stored), `invalid` (phone moves the file to `failed/`), `retry`, `slow_down`. Any
+  failure without a valid device key is the stock Nest 404, so the routes look absent.
+- **Security.** `DeviceKeyGuard` ignores `AUTH_DISABLED`. Device keys (`fintrack_` + 43)
+  and pairing codes are stored only as SHA-256; pairing is single-use, 10 minutes, 5
+  tries. A key can only write its own rows and edit their memo for 7 days. The SMS
+  text (card numbers masked first) and location (4 dp) are sealed with AES-256-GCM under
+  `MEMO_DATA_KEY`; with no key, ingest fails closed. Never log device request bodies.
+- `card_id` is set only for an exact, unambiguous `cards.last4` match. Alert last4 can
+  differ from the statement's (HDFC alerts say 0531 for card 2209); no alias map yet.
+- `scripts/transaction-memos-e2e.mjs` exercises every route against a local database.
 
 ## Statement parsing (`src/imports/parsers/hdfc.parser.ts`)
 

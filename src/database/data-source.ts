@@ -20,6 +20,8 @@ import { CardStatementImport } from './entities/card-statement-import.entity';
 import { WebauthnCredential } from './entities/webauthn-credential.entity';
 import { AuthSession } from './entities/auth-session.entity';
 import { WebauthnChallenge } from './entities/webauthn-challenge.entity';
+import { PairedDevice } from './entities/paired-device.entity';
+import { TransactionMemo } from './entities/transaction-memo.entity';
 
 const AppDataSource = new DataSource({
   type: 'postgres',
@@ -45,6 +47,8 @@ const AppDataSource = new DataSource({
     WebauthnCredential,
     AuthSession,
     WebauthnChallenge,
+    PairedDevice,
+    TransactionMemo,
   ],
   migrations: [path.join(__dirname, 'migrations/*.{ts,js}')],
   synchronize: false,

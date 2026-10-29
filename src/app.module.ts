@@ -23,6 +23,8 @@ import { CardStatementImport } from './database/entities/card-statement-import.e
 import { WebauthnCredential } from './database/entities/webauthn-credential.entity';
 import { AuthSession } from './database/entities/auth-session.entity';
 import { WebauthnChallenge } from './database/entities/webauthn-challenge.entity';
+import { PairedDevice } from './database/entities/paired-device.entity';
+import { TransactionMemo } from './database/entities/transaction-memo.entity';
 import { FriendsModule } from './friends/friends.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { CategoriesModule } from './categories/categories.module';
@@ -30,6 +32,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { CardsModule } from './cards/cards.module';
 import { AuthModule } from './auth/auth.module';
+import { TransactionMemosModule } from './transaction-memos/transaction-memos.module';
 import { SessionGuard } from './auth/session.guard';
 import { OriginCsrfGuard } from './auth/origin-csrf.guard';
 
@@ -63,6 +66,8 @@ import { OriginCsrfGuard } from './auth/origin-csrf.guard';
         WebauthnCredential,
         AuthSession,
         WebauthnChallenge,
+        PairedDevice,
+        TransactionMemo,
       ],
       synchronize: false,
       // DATABASE_URL must point at the Supabase *transaction-mode* pooler
@@ -110,6 +115,7 @@ import { OriginCsrfGuard } from './auth/origin-csrf.guard';
     SubscriptionsModule,
     CardsModule,
     AuthModule,
+    TransactionMemosModule,
   ],
   // Global guards run in registration order: rate-limit first, then reject
   // forged cross-origin mutations, then require a session (unless @Public).
