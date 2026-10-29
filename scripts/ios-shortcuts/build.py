@@ -473,6 +473,27 @@ def build_memos(api: str) -> list:
     s.output('kept')
     s.end()
 
+    # ── Offline? (message-triggered runs only) ──
+    # Shortcuts cannot catch a failed request, so with no signal at all an SMS
+    # run stops quietly here instead of erroring; its file is already saved.
+    # Offline only when every reading agrees (no Wi-Fi name, no Wi-Fi signal,
+    # exactly 0 cellular bars): anything unclear counts as online. Charger,
+    # Wi-Fi, scheduled and manual runs (mode 'flush') always try to send, so a
+    # misreading can never strand the queue.
+    s.if_(V('mode'), 4, text='capture')
+    s.settext('wifiName', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Wi-Fi', WFWiFiDetail='Network Name'))
+    s.settext('wifiSignal', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Wi-Fi', WFWiFiDetail='RSSI'))
+    s.settext('signalBars', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Cellular',
+                                  WFCellularDetail='Number of Signal Bars'))
+    s.if_(s.count(V('wifiName'), chars=True), 4, number=0)
+    s.if_(s.count(V('wifiSignal'), chars=True), 4, number=0)
+    s.if_(V('signalBars'), 4, text='0')
+    s.output('offline')
+    s.end()
+    s.end()
+    s.end()
+    s.end()
+
     # ── Send everything waiting, oldest first ──
     # One sender at a time: a run that finds a lock from this or the last minute
     # leaves its file to that sender, which re-lists the outbox before it stops.
