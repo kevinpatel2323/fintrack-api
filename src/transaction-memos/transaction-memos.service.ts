@@ -26,6 +26,10 @@ export interface DeviceReply {
 export const MEMO_EDIT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const PENDING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const REPARSE_BATCH = 200;
+// The day a memo belongs to: the date in the SMS, else the day it arrived (or
+// was captured) in India.
+const MEMO_DAY_SQL =
+  "COALESCE(m.txn_date, (COALESCE(m.received_at, m.captured_at, m.created_at) AT TIME ZONE 'Asia/Kolkata')::date)";
 
 const EMPTY_FIELDS: ParsedSms = {
   direction: null, channel: null, amount: null, currency: null, bank: null, instrument: null,
@@ -192,6 +196,8 @@ export class TransactionMemosService {
     const qb = this.memos.createQueryBuilder('m');
     if (query.tab === 'no-memo') qb.andWhere('m.memo IS NULL');
     if (query.tab === 'debit' || query.tab === 'credit') qb.andWhere('m.direction = :direction', { direction: query.tab });
+    if (query.start) qb.andWhere(`${MEMO_DAY_SQL} >= :start`, { start: query.start });
+    if (query.end) qb.andWhere(`${MEMO_DAY_SQL} <= :end`, { end: query.end });
     const search = query.q?.trim();
     if (search) {
       const like = `%${escapeLike(search)}%`;
@@ -353,6 +359,8 @@ export class TransactionMemosService {
       txnDate: m.txnDate,
       cardId: m.cardId,
       hasLocation: Boolean(m.locationSealed),
+      // Stored, whether or not this server holds the key to read it.
+      hasMessage: Boolean(m.rawMessageSealed),
       parseStatus: m.parseStatus,
       deviceId: m.deviceId,
     };
