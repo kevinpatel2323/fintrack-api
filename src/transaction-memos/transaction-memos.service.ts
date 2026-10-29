@@ -78,7 +78,7 @@ export class TransactionMemosService {
     if (dto.outboxCount !== undefined) await this.devices.noteOutbox(device.id, dto.outboxCount);
     const memo = cleanMemo(dto.memo);
     const message = dto.message?.trim() ? dto.message : null;
-    if (!message) return this.applyMemoOnly(device, dto.submissionId, memo, dto.capturedAt);
+    if (!message) return this.applyUpdate(device, dto, memo);
     if (isOtpMessage(message)) return { status: 'refused' };
 
     const key = this.requireKey();
@@ -143,18 +143,15 @@ export class TransactionMemosService {
     return { status: 'accepted', id: existing.id, summary: memoSummary(existing), duplicate: true };
   }
 
-  // A memo typed for an SMS sent earlier ("Add Fintrack memo", or a burst where
-  // the SMS went out before its memo was typed).
-  private async applyMemoOnly(
-    device: PairedDevice,
-    submissionId: string,
-    memo: string | null,
-    capturedAt: string | undefined,
-  ): Promise<DeviceReply> {
-    const row = await this.memos.findOne({ where: { submissionId } });
+  // The memo and/or location for an SMS sent earlier: the phone sends each SMS
+  // before asking for its memo (so a dismissed prompt still leaves the row),
+  // then follows up with what was typed and where it was. "Add Fintrack memo"
+  // uses the same path.
+  private async applyUpdate(device: PairedDevice, dto: DeviceMemoDto, memo: string | null): Promise<DeviceReply> {
+    const row = await this.memos.findOne({ where: { submissionId: dto.submissionId } });
     if (!row) {
       // Its SMS may still be on the way; give up only once the edit window has passed.
-      const captured = parseDate(capturedAt);
+      const captured = parseDate(dto.capturedAt);
       if (captured && Date.now() - captured.getTime() > MEMO_EDIT_WINDOW_MS) {
         return { status: 'invalid', message: 'No memo to update.' };
       }
@@ -164,9 +161,22 @@ export class TransactionMemosService {
     if (row.deviceId !== device.id || Date.now() - row.createdAt.getTime() > MEMO_EDIT_WINDOW_MS) {
       return { status: 'invalid', message: 'No memo to update.' };
     }
-    if (memo && memo !== row.memo) {
-      await this.memos.update({ id: row.id }, { memo, memoAt: new Date(), updatedAt: new Date() });
-      row.memo = memo;
+    const patch: Partial<TransactionMemo> = {};
+    if (memo && memo !== row.memo) Object.assign(patch, { memo, memoAt: new Date() });
+    const location = roundLocation(
+      dto.location?.latitude ?? dto.latitude,
+      dto.location?.longitude ?? dto.longitude,
+    );
+    // A location is only ever filled in, never moved.
+    if (location && !row.locationSealed) {
+      Object.assign(patch, {
+        locationSealed: seal(JSON.stringify(location), this.requireKey()),
+        locationStatus: dto.locationStatus?.trim() || 'captured',
+      });
+    }
+    if (Object.keys(patch).length) {
+      await this.memos.update({ id: row.id }, { ...patch, updatedAt: new Date() });
+      Object.assign(row, patch);
     }
     return { status: 'accepted', id: row.id, summary: memoSummary(row) };
   }

@@ -43,6 +43,22 @@ describe('buildTransactionsCsv', () => {
     expect(row).toBe('2026-02-01,Coffee,,,,Debit,250.5,1000,Wallet');
   });
 
+  it('names the account by its holder, and by its number until it is named', () => {
+    const csv = buildTransactionsCsv([
+      makeTransaction({
+        withdrawal: 10,
+        account: { accountNumber: '50100123456714', holderName: 'Kevin Patel' } as Transaction['account'],
+      }),
+      makeTransaction({
+        withdrawal: 10,
+        account: { accountNumber: '50100123456714', holderName: null } as Transaction['account'],
+      }),
+    ]);
+    const [, named, unnamed] = csv.split('\r\n');
+    expect(named.endsWith(',Kevin Patel')).toBe(true);
+    expect(unnamed.endsWith(',50100123456714')).toBe(true);
+  });
+
   it('marks deposits as Credit and uses the deposit amount', () => {
     const csv = buildTransactionsCsv([
       makeTransaction({ narration: 'Refund', deposit: 99.99, withdrawal: 0 }),

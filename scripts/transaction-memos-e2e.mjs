@@ -84,6 +84,16 @@ ok(spd.json.memo === 'chai with Rahul' && spd.json.location?.latitude === 23.022
 const spDevices = await call('GET', '/transaction-memos/devices');
 ok(spDevices.json.data.some((d) => d.outboxCount === 2), 'outboxCount reaches the Devices panel', spDevices.json);
 
+console.log('Send first, memo and location after (a dismissed prompt still leaves the row)');
+const D = sub('d');
+const d1 = await call('POST', '/api/v1/memos', { key: KEY, body: { submissionId: D, message: 'Sent Rs.10.00 From HDFC Bank A/C *6714 To MINAL PATEL On 30/10/26 Ref 132061008935', sender: 'HDFCBK-T', capturedAt: nowIso() } });
+ok(d1.json.status === 'accepted', 'SMS alone is stored at once', d1.json);
+const d2 = await call('POST', '/api/v1/memos', { key: KEY, body: { submissionId: D, memo: 'Self transfer', latitude: '23.0622082', longitude: '72.5312508', locationStatus: 'captured', capturedAt: nowIso() } });
+const d3 = await call('POST', '/api/v1/memos', { key: KEY, body: { submissionId: D, latitude: '10.0', longitude: '10.0', capturedAt: nowIso() } });
+const dd = await call('GET', `/transaction-memos/${d1.json.id}`);
+ok(d2.json.status === 'accepted' && dd.json.memo === 'Self transfer' && dd.json.location?.latitude === 23.0622, 'the follow-up adds memo and location', dd.json);
+ok(d3.json.status === 'accepted' && dd.json.location?.longitude === 72.5313, 'a later location never moves it');
+
 console.log('Burst: SMS sent before its memo was typed');
 const B = sub('b');
 const smsB = 'Spent Rs.1234 On HDFC Bank Card 2209 At AMAZON On 2026-10-29:12:34:56.Not You? To Block+Reissue Call 18002586161/SMS BLOCK CC 2209 to 7308080808';

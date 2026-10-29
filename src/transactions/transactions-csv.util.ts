@@ -49,7 +49,9 @@ export function buildTransactionsCsv(transactions: Transaction[]): string {
         isCredit ? 'Credit' : 'Debit',
         isCredit ? t.deposit : t.withdrawal,
         t.balance,
-        t.account?.accountNumber ?? '',
+        // The account by its holder's name, as the app shows it; the number
+        // until the account is named.
+        t.account?.holderName || t.account?.accountNumber || '',
       ]),
     );
   }

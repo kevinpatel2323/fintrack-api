@@ -33,6 +33,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { CardsModule } from './cards/cards.module';
 import { AuthModule } from './auth/auth.module';
 import { TransactionMemosModule } from './transaction-memos/transaction-memos.module';
+import { AccountsModule } from './accounts/accounts.module';
 import { SessionGuard } from './auth/session.guard';
 import { OriginCsrfGuard } from './auth/origin-csrf.guard';
 
@@ -116,6 +117,7 @@ import { OriginCsrfGuard } from './auth/origin-csrf.guard';
     CardsModule,
     AuthModule,
     TransactionMemosModule,
+    AccountsModule,
   ],
   // Global guards run in registration order: rate-limit first, then reject
   // forged cross-origin mutations, then require a session (unless @Public).

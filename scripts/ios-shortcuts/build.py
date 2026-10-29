@@ -269,6 +269,67 @@ class Shortcut:
         return self.actions
 
 
+def drain(s: Shortcut, API, passes: int = 2, only=None) -> None:
+    """Sends the outbox, oldest first, in `passes` passes of up to 25 files, or
+    just the file `only` (the SMS this run saved, as its Save File returned it).
+
+    No lock between runs: two SMS at once may both send the same file, and the
+    server's upsert by submissionId makes that harmless. The only delete is the
+    sent file itself (iOS asks unless Settings › Shortcuts › Advanced › Allow
+    Deleting Without Confirmation is on). Uses $token, $halt, $sentCount,
+    $failedCount and $notConnected, which the caller sets up.
+    """
+    for _ in range(passes):
+        s.if_(V('halt'), 4, text='no')
+        if only is not None:
+            ordered = only
+        else:
+            ordered = s.act('filter.files', s.name('Ordered'), WFContentItemInputParameter=attach(s.folder_files('Fintrack/outbox')),
+                            WFContentItemSortProperty='Name', WFContentItemSortOrder='A to Z',
+                            WFContentItemLimitEnabled=True, WFContentItemLimitNumber=25)
+        s.each(ordered)
+        s.setvar('outboxFile', V('Repeat Item'))
+        s.if_(V('halt'), 4, text='no')
+        for attempt in range(2):
+            if attempt:
+                # A blank or non-JSON reply (a cold start, a captive portal): one
+                # more try after 2 s, then the file waits for the next trigger.
+                s.if_(s.count(V('status'), chars=True), 4, number=0)
+                s.act('delay', WFDelayTime=2)
+            reply = s.request(API, '/api/v1/memos', 'POST', body_file=V('outboxFile'), key_var='token')
+            reply_dict = s.read_json(reply)
+            s.settext('status', s.get_value(reply_dict, 'status'))
+            s.settext('statusCode', s.get_value(reply_dict, 'statusCode'))
+            if attempt:
+                s.end()
+        s.settext('handled', 'no')
+        for done in ('accepted', 'refused'):
+            s.if_(V('status'), 4, text=done)
+            s.delete(V('outboxFile'))
+            s.add_one('sentCount')
+            s.settext('handled', 'yes')
+            s.end()
+        s.if_(V('status'), 4, text='invalid')
+        failed_name = s.act('getitemname', s.name('Name'), WFInput=attach(V('outboxFile')))
+        s.save_file(V('outboxFile'), 'Fintrack/failed/', failed_name, '.txt')
+        s.delete(V('outboxFile'))
+        s.add_one('failedCount')
+        s.settext('handled', 'yes')
+        s.end()
+        # Anything else (retry, slow_down, not paired, a blank reply): keep the
+        # file and stop sending until the next trigger.
+        s.if_(V('handled'), 4, text='no')
+        s.settext('halt', 'yes')
+        s.if_(V('statusCode'), 4, text='404')
+        s.settext('notConnected', 'yes')
+        s.end()
+        s.end()
+        s.end()
+        s.end()
+        s.end()
+
+
+
 # ── Fintrack Memos ─────────────────────────────────────────────────────────
 
 def memo_prompt(s: Shortcut, amount_text) -> None:
@@ -416,7 +477,7 @@ def build_memos(api: str) -> list:
     host = s.replace(API, '^https?://', '')
     s.alert('Connect this iPhone to Fintrack (', host, ')? Bank and card SMS will be sent there with the memo you type. '
             'OTPs and personal messages never leave this iPhone.', cancel=True)
-    request_file = s.save_file(s.text(s.dictionary([('code', (code,))])), 'Fintrack/pair-request.json')
+    request_file = s.save_file(s.text(s.dictionary([('code', (code,))])), 'Fintrack/pair-request.txt')
     # Left in place (overwritten next time): it only holds a code that is spent
     # once used, and deleting it would cost a confirmation prompt.
     reply = s.request(API, '/api/v1/devices/pair', 'POST', body_file=request_file)
@@ -489,7 +550,9 @@ def build_memos(api: str) -> list:
     stamp = s.fmt_date(V('now'), "yyyyMMdd'T'HHmmss")
     rand = [s.act('number.random', s.name('Random'), WFRandomNumberMinimum=10000, WFRandomNumberMaximum=99999) for _ in range(3)]
     s.setvar('submissionId', s.replace(s.text(stamp, '-', rand[0], '-', rand[1], '-', rand[2]), '[^A-Za-z0-9._:-]', ''))
-    s.settext('filePath', 'Fintrack/outbox/', V('submissionId'), '.json')
+    # .txt: iOS saves text as .txt whatever the name says, and a .json path
+    # would then never find the file again. The server reads the JSON inside.
+    s.settext('filePath', 'Fintrack/outbox/', V('submissionId'), '.txt')
     s.setvar('payload', s.dictionary([
         ('filter', [('version', (FILTER_VERSION,)), ('senderRecognised', (V('senderRecognised'),))]),
         ('shortcutVersion', (VERSION,)),
@@ -508,34 +571,88 @@ def build_memos(api: str) -> list:
     s.end()
     # Saved before anything that can fail (the prompt, location, network): from
     # here on the SMS cannot be lost.
-    s.save_file(s.text(V('payload')), V('filePath'))
+    s.setvar('capturedFile', s.save_file(s.text(V('payload')), V('filePath')))
 
-    # Two or three short lines above the text box; Done sends it.
-    answer = s.ask(V('memoPrompt'))
-    s.settext('memoText', answer)
-    memo_len = s.count(V('memoText'), chars=True)
-    s.if_(memo_len, 2, number=0)
-    s.set_value('payload', 'memo', V('memoText'))
-    s.save_file(s.text(V('payload')), V('filePath'))
+    # ── Offline? ──
+    # Shortcuts cannot catch a failed request, so with no signal at all the
+    # sends below are skipped and the SMS waits in the outbox. Offline only when
+    # every reading agrees (no Wi-Fi name, no Wi-Fi signal, exactly 0 cellular
+    # bars): anything unclear counts as online. Charger, Wi-Fi, scheduled and
+    # manual runs never take this check, so a misreading can't strand the queue.
+    s.settext('online', 'yes')
+    s.settext('wifiName', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Wi-Fi', WFWiFiDetail='Network Name'))
+    s.settext('wifiSignal', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Wi-Fi', WFWiFiDetail='RSSI'))
+    s.settext('signalBars', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Cellular',
+                                  WFCellularDetail='Number of Signal Bars'))
+    s.if_(s.count(V('wifiName'), chars=True), 4, number=0)
+    s.if_(s.count(V('wifiSignal'), chars=True), 4, number=0)
+    s.if_(V('signalBars'), 4, text='0')
+    s.settext('online', 'no')
+    s.end()
+    s.end()
     s.end()
 
+    # Send first: the SMS reaches Fintrack before the memo box appears, so a
+    # dismissed or ignored prompt still leaves the row (without a memo).
+    s.if_(V('connected'), 4, text='yes')
+    s.if_(V('online'), 4, text='yes')
+    drain(s, API, passes=1, only=V('capturedFile'))
+    s.end()
+    s.end()
+
+    # Two or three short lines above the text box. Swiping it away ends the run
+    # here, which is fine: the SMS is already on its way.
+    s.settext('memoText', s.ask(V('memoPrompt')))
+    memo_len = s.count(V('memoText'), chars=True)
+
+    s.settext('locOk', 'no')
     s.if_(LOCATION, 4, text='on')
     s.if_(V('cfgLocation'), 4, text='on')
     s.if_(V('connected'), 4, text='yes')
     here = s.act('getcurrentlocation', s.name('Location'))
-    lat = s.text(s.act('properties.locations', s.name('Latitude'), WFInput=attach(here), WFContentItemPropertyName='Latitude'))
-    lon = s.text(s.act('properties.locations', s.name('Longitude'), WFInput=attach(here), WFContentItemPropertyName='Longitude'))
-    lat_ok = s.count(s.match(lat, r'^-?[0-9]+(\.[0-9]+)?$'))
-    lon_ok = s.count(s.match(lon, r'^-?[0-9]+(\.[0-9]+)?$'))
+    s.settext('latText', s.act('properties.locations', s.name('Latitude'), WFInput=attach(here), WFContentItemPropertyName='Latitude'))
+    s.settext('lonText', s.act('properties.locations', s.name('Longitude'), WFInput=attach(here), WFContentItemPropertyName='Longitude'))
+    lat_ok = s.count(s.match(V('latText'), r'^-?[0-9]+(\.[0-9]+)?$'))
+    lon_ok = s.count(s.match(V('lonText'), r'^-?[0-9]+(\.[0-9]+)?$'))
     s.if_(lat_ok, 2, number=0)
     s.if_(lon_ok, 2, number=0)
-    s.set_value('payload', 'latitude', lat)
-    s.set_value('payload', 'longitude', lon)
+    s.settext('locOk', 'yes')
+    s.end()
+    s.end()
+    s.end()
+    s.end()
+    s.end()
+
+    # The follow-up: into the SMS's own file while it still waits (offline, not
+    # paired, server trouble), otherwise a small update file the server merges
+    # into the row by submissionId.
+    s.settext('followUp', 'no')
+    s.if_(memo_len, 2, number=0)
+    s.settext('followUp', 'yes')
+    s.end()
+    s.if_(V('locOk'), 4, text='yes')
+    s.settext('followUp', 'yes')
+    s.end()
+    s.if_(V('followUp'), 4, text='yes')
+    s.settext('target', V('filePath'))
+    s.if_(s.count(s.get_file(V('filePath'))), 4, number=0)
+    later = s.act('date', s.name('CurrentDate'), WFDateActionMode='Current Date')
+    tag = s.act('number.random', s.name('Random'), WFRandomNumberMinimum=10000, WFRandomNumberMaximum=99999)
+    s.settext('target', 'Fintrack/outbox/', s.fmt_date(later, "yyyyMMdd'T'HHmmss"), '-update-', tag, '.txt')
+    s.setvar('payload', s.dictionary([('submissionId', (V('submissionId'),)), ('capturedAt', (captured_at,))]))
+    s.end()
+    s.if_(memo_len, 2, number=0)
+    s.set_value('payload', 'memo', V('memoText'))
+    s.end()
+    s.if_(V('locOk'), 4, text='yes')
+    s.set_value('payload', 'latitude', V('latText'))
+    s.set_value('payload', 'longitude', V('lonText'))
     s.set_value('payload', 'locationStatus', 'captured')
-    s.save_file(s.text(V('payload')), V('filePath'))
     s.end()
-    s.end()
-    s.end()
+    s.save_file(s.text(V('payload')), V('target'))
+    s.if_(V('connected'), 4, text='yes')
+    s.if_(V('online'), 4, text='yes')
+    drain(s, API, passes=1)
     s.end()
     s.end()
     s.end()
@@ -545,80 +662,17 @@ def build_memos(api: str) -> list:
                 'in Fintrack open Memos › Connect iPhone.')
     s.output('kept')
     s.end()
-
-    # ── Offline? (message-triggered runs only) ──
-    # Shortcuts cannot catch a failed request, so with no signal at all an SMS
-    # run stops quietly here instead of erroring; its file is already saved.
-    # Offline only when every reading agrees (no Wi-Fi name, no Wi-Fi signal,
-    # exactly 0 cellular bars): anything unclear counts as online. Charger,
-    # Wi-Fi, scheduled and manual runs (mode 'flush') always try to send, so a
-    # misreading can never strand the queue.
-    s.if_(V('mode'), 4, text='capture')
-    s.settext('wifiName', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Wi-Fi', WFWiFiDetail='Network Name'))
-    s.settext('wifiSignal', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Wi-Fi', WFWiFiDetail='RSSI'))
-    s.settext('signalBars', s.act('getwifi', s.name('Network Details'), WFNetworkDetailsNetwork='Cellular',
-                                  WFCellularDetail='Number of Signal Bars'))
-    s.if_(s.count(V('wifiName'), chars=True), 4, number=0)
-    s.if_(s.count(V('wifiSignal'), chars=True), 4, number=0)
-    s.if_(V('signalBars'), 4, text='0')
-    s.output('offline')
-    s.end()
-    s.end()
-    s.end()
     s.end()
 
-    # ── Send everything waiting, oldest first ──
-    # No lock between runs: two SMS at once may both send the same file, and
-    # the server's upsert by submissionId makes that harmless. The only delete
-    # is the sent file itself (iOS asks unless Settings › Shortcuts › Advanced ›
-    # Allow Deleting Without Confirmation is on).
-
-    for _ in range(2):
-        s.if_(V('halt'), 4, text='no')
-        ordered = s.act('filter.files', s.name('Ordered'), WFContentItemInputParameter=attach(s.folder_files('Fintrack/outbox')),
-                        WFContentItemSortProperty='Name', WFContentItemSortOrder='A to Z',
-                        WFContentItemLimitEnabled=True, WFContentItemLimitNumber=25)
-        s.each(ordered)
-        s.setvar('outboxFile', V('Repeat Item'))
-        s.if_(V('halt'), 4, text='no')
-        for attempt in range(2):
-            if attempt:
-                # A blank or non-JSON reply (a cold start, a captive portal): one
-                # more try after 2 s, then the file waits for the next trigger.
-                s.if_(s.count(V('status'), chars=True), 4, number=0)
-                s.act('delay', WFDelayTime=2)
-            reply = s.request(API, '/api/v1/memos', 'POST', body_file=V('outboxFile'), key_var='token')
-            reply_dict = s.read_json(reply)
-            s.settext('status', s.get_value(reply_dict, 'status'))
-            s.settext('statusCode', s.get_value(reply_dict, 'statusCode'))
-            if attempt:
-                s.end()
-        s.settext('handled', 'no')
-        for done in ('accepted', 'refused'):
-            s.if_(V('status'), 4, text=done)
-            s.delete(V('outboxFile'))
-            s.add_one('sentCount')
-            s.settext('handled', 'yes')
-            s.end()
-        s.if_(V('status'), 4, text='invalid')
-        failed_name = s.act('getitemname', s.name('Name'), WFInput=attach(V('outboxFile')))
-        s.save_file(V('outboxFile'), 'Fintrack/failed/', failed_name, '.json')
-        s.delete(V('outboxFile'))
-        s.add_one('failedCount')
-        s.settext('handled', 'yes')
-        s.end()
-        # Anything else (retry, slow_down, not paired, a blank reply): keep the
-        # file and stop sending until the next trigger.
-        s.if_(V('handled'), 4, text='no')
-        s.settext('halt', 'yes')
-        s.if_(V('statusCode'), 4, text='404')
-        s.settext('notConnected', 'yes')
-        s.end()
-        s.end()
-        s.end()
-        s.end()
-        s.end()
-
+    # ── Charger, Wi-Fi, scheduled, manual and post-pairing runs: send the outbox ──
+    s.if_(V('mode'), 4, text='flush')
+    s.if_(V('connected'), 5, text='yes')
+    notify_once('notpaired', 'This iPhone is not paired yet. Your bank messages are saved and will be sent after pairing: '
+                'in Fintrack open Memos › Connect iPhone.')
+    s.output('kept')
+    s.end()
+    drain(s, API)
+    s.end()
 
     waiting = s.count(s.folder_files('Fintrack/outbox'))
     s.if_(V('notConnected'), 4, text='yes')
@@ -678,10 +732,26 @@ def build_add_memo(api: str) -> list:
     s.output('not-paired')
     s.end()
 
+    # Send anything still waiting on this iPhone first (a memo prompt that was
+    # swiped away before an update, no signal at the time), so it can be picked.
+    for folder in ['Fintrack', 'Fintrack/outbox', 'Fintrack/failed']:
+        s.ensure_folder(folder)
+    for var, value in [('halt', 'no'), ('notConnected', 'no')]:
+        s.settext(var, value)
+    s.setvar('sentCount', s.number(0))
+    s.setvar('failedCount', s.number(0))
+    drain(s, API)
+
     pending = s.read_json(s.request(API, '/api/v1/memos/pending', 'GET', key_var='token'))
     rows = s.get_value(pending, 'data')
     s.if_(s.count(rows), 4, number=0)
-    s.alert('Every bank message from the last 24 hours already has a memo. Older ones can be edited on the Memos page in Fintrack.')
+    waiting = s.count(s.folder_files('Fintrack/outbox'))
+    s.if_(waiting, 2, number=0)
+    s.alert(waiting, " bank message(s) are still waiting on this iPhone to reach Fintrack (no signal, or the server didn't "
+            'answer). Try again in a moment.')
+    s.output('waiting')
+    s.end()
+    s.alert('No bank message from the last 24 hours is missing a memo. Older ones can be edited on the Memos page in Fintrack.')
     s.output('none')
     s.end()
     s.each(rows)
@@ -709,7 +779,7 @@ def build_add_memo(api: str) -> list:
     rand = s.act('number.random', s.name('Random'), WFRandomNumberMinimum=10000, WFRandomNumberMaximum=99999)
     body = s.dictionary([('submissionId', (V('chosenId'),)), ('memo', (V('memoText'),)), ('capturedAt', (s.fmt_date(now, ISO),))])
     # Into the same outbox as the SMS: if this send fails, Fintrack Memos sends it later.
-    saved = s.save_file(s.text(body), 'Fintrack/outbox/', stamp, '-memo-', rand, '.json')
+    saved = s.save_file(s.text(body), 'Fintrack/outbox/', stamp, '-memo-', rand, '.txt')
     s.setvar('memoFile', saved)
     status = s.text(s.get_value(s.read_json(s.request(API, '/api/v1/memos', 'POST', body_file=V('memoFile'), key_var='token')), 'status'))
     s.if_(status, 4, text='accepted')
