@@ -491,10 +491,18 @@ def build_memos(api: str) -> list:
         s.each(ordered)
         s.setvar('outboxFile', V('Repeat Item'))
         s.if_(V('halt'), 4, text='no')
-        reply = s.request(API, '/api/v1/memos', 'POST', body_file=V('outboxFile'), key_var='token')
-        reply_dict = s.read_json(reply)
-        s.settext('status', s.get_value(reply_dict, 'status'))
-        s.settext('statusCode', s.get_value(reply_dict, 'statusCode'))
+        for attempt in range(2):
+            if attempt:
+                # A blank or non-JSON reply (a cold start, a captive portal): one
+                # more try after 2 s, then the file waits for the next trigger.
+                s.if_(s.count(V('status'), chars=True), 4, number=0)
+                s.act('delay', WFDelayTime=2)
+            reply = s.request(API, '/api/v1/memos', 'POST', body_file=V('outboxFile'), key_var='token')
+            reply_dict = s.read_json(reply)
+            s.settext('status', s.get_value(reply_dict, 'status'))
+            s.settext('statusCode', s.get_value(reply_dict, 'statusCode'))
+            if attempt:
+                s.end()
         s.settext('handled', 'no')
         for done in ('accepted', 'refused'):
             s.if_(V('status'), 4, text=done)
@@ -544,12 +552,25 @@ def build_memos(api: str) -> list:
     s.if_(V('failedCount'), 2, number=0)
     s.notify(V('failedCount'), ' message(s) could not be read by Fintrack and were moved to iCloud Drive › Shortcuts › Fintrack › failed.')
     s.end()
-    s.if_(V('halt'), 4, text='yes')
-    s.if_(V('notConnected'), 5, text='yes')
+    # Stuck queue: the oldest file (names start yyyyMMdd'T'HHmm) is from before
+    # yesterday, i.e. something has waited over a day. Once a day at most.
     s.if_(waiting, 2, number=0)
-    notify_once('waiting', waiting, ' message(s) are waiting to send. They go out with the next message, '
-                'when the iPhone charges or joins Wi-Fi.')
-    s.end()
+    oldest = s.act('filter.files', s.name('Oldest'), WFContentItemInputParameter=attach(s.folder_files('Fintrack/outbox')),
+                   WFContentItemSortProperty='Name', WFContentItemSortOrder='A to Z',
+                   WFContentItemLimitEnabled=True, WFContentItemLimitNumber=1)
+    s.settext('oldestName', s.act('getitemname', s.name('Name'), WFInput=attach(oldest)))
+    day_ago = s.act('adjustdate', s.name('AdjustDate'), WFAdjustOperation='Subtract', WFDate=tokens(V('now')),
+                    WFDuration={'Value': {'Unit': 'min', 'Magnitude': '1440'}, 'WFSerializationType': 'WFQuantityFieldValue'})
+    s.setvar('yesterday', s.fmt_date(day_ago, 'yyyyMMdd'))
+    s.settext('recent', 'no')
+    for day in ('today', 'yesterday'):
+        s.if_(V('oldestName'), 8, text=(V(day),))
+        s.settext('recent', 'yes')
+        s.end()
+    s.if_(V('recent'), 4, text='no')
+    since = s.replace(V('oldestName'), r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2}).*$', '$3/$2 $4:$5')
+    notify_once('stuck', waiting, ' message(s) have been waiting to send since ', since,
+                '. Check that this iPhone is online and still paired (Fintrack › Memos › Devices).')
     s.end()
     s.end()
 
