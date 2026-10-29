@@ -35,6 +35,8 @@ KEY_PATTERN = r'^fintrack_[A-Za-z0-9_-]{43}$'
 # The imported shortcut this grew from. Hex so the name never appears in our own
 # source; the build refuses any output that still contains it.
 THIRD_PARTY_NAME = bytes.fromhex('6d756e696d').decode()
+# How the memo prompt is worded from the SMS; test-prompt.js runs the same rules.
+RULES = json.loads((HERE / 'prompt-rules.json').read_text())
 
 INPUT_CLASSES = [
     'WFAppContentItem', 'WFAppStoreAppContentItem', 'WFArticleContentItem', 'WFContactContentItem',
@@ -269,6 +271,83 @@ class Shortcut:
 
 # ── Fintrack Memos ─────────────────────────────────────────────────────────
 
+def memo_prompt(s: Shortcut, amount_text) -> None:
+    """Sets $memoPrompt from the SMS ($norm), read on the phone so it works offline:
+
+        −₹10.00 · UPI
+        To MINAL RAJENDRABHAI PATEL
+        HDFC ••6714
+
+    A line is left out when the SMS doesn't say. Mirrors test-prompt.js.
+    """
+    rupees = s.replace(amount_text, RULES['rupee'], '₹', case=False)
+
+    # Sign: the first debit or credit word in the SMS decides.
+    s.settext('sign', '')
+    words = s.match(V('norm'), RULES['direction'], case=False)
+    s.if_(s.count(words), 2, number=0)
+    first = s.act('getitemfromlist', s.name('Word'), WFInput=attach(words), WFItemSpecifier='First Item')
+    s.settext('sign', '−')
+    s.if_(s.count(s.match(first, RULES['credit'], case=False)), 2, number=0)
+    s.settext('sign', '+')
+    s.end()
+    s.end()
+
+    # Method: later rules win (UPI over a RuPay card, AutoPay over UPI…).
+    s.settext('method', '')
+    for label, pattern in RULES['methods']:
+        s.if_(s.count(s.match(V('norm'), pattern, case=False)), 2, number=0)
+        s.settext('method', label)
+        s.end()
+    s.if_(V('sign'), 4, text='−')
+    s.if_(s.count(s.match(V('norm'), RULES['charge'], case=False)), 2, number=0)
+    s.settext('method', 'Bank charge')
+    s.end()
+    s.end()
+    s.settext('memoPrompt', V('sign'), rupees)
+    s.if_(s.count(V('method'), chars=True), 2, number=0)
+    s.settext('memoPrompt', V('memoPrompt'), ' · ', V('method'))
+    s.end()
+
+    # Who: the first rule that matches. Replace Text hands the SMS back
+    # unchanged when its pattern doesn't match. Once one has, the rest are
+    # skipped without running (every action costs time before the prompt).
+    s.settext('payee', '')
+    s.settext('needPayee', 'yes')
+    for pattern in RULES['payee']:
+        s.if_(V('needPayee'), 4, text='yes')
+        s.settext('found', s.replace(V('norm'), pattern, '$1', case=False))
+        s.if_(V('found'), 5, text=(V('norm'),))
+        s.settext('payee', V('found'))
+        s.settext('needPayee', 'no')
+        s.end()
+        s.end()
+    s.if_(s.count(V('payee'), chars=True), 2, number=0)
+    s.settext('lead', 'To')
+    for when, lead in ((('sign', '+'), 'From'), (('method', 'ATM'), 'At'), (('method', 'Bank charge'), 'For')):
+        s.if_(V(when[0]), 4, text=when[1])
+        s.settext('lead', lead)
+        s.end()
+    short = s.replace(V('payee'), RULES['payeeMax'], '$1…')
+    s.settext('memoPrompt', V('memoPrompt'), '\n', V('lead'), ' ', short)
+    s.end()
+
+    # Which account: "HDFC ••6714".
+    s.settext('account', s.replace(V('norm'), RULES['account'], '••$1', case=False))
+    s.if_(V('account'), 4, text=(V('norm'),))
+    s.settext('account', '')
+    s.end()
+    s.settext('bankName', '')
+    banks = s.match(V('norm'), RULES['bank'], case=False)
+    s.if_(s.count(banks), 2, number=0)
+    s.settext('bankName', s.act('getitemfromlist', s.name('Bank'), WFInput=attach(banks), WFItemSpecifier='First Item'))
+    s.end()
+    line = s.replace(s.text(V('bankName'), ' ', V('account')), r'^\s+|\s+$', '')
+    s.if_(s.count(line, chars=True), 2, number=0)
+    s.settext('memoPrompt', V('memoPrompt'), '\n', line)
+    s.end()
+
+
 def build_memos(api: str) -> list:
     s = Shortcut()
     filter_block = json.loads((HERE / 'filter-block.json').read_text())
@@ -399,12 +478,9 @@ def build_memos(api: str) -> list:
     # ── Capture: save the SMS, ask for the memo, add the location ──
     s.if_(V('filtered'), 4, text='yes')
     amount_text = s.act('getitemfromlist', s.name('Amount'), WFInput=attach(amount_hit), WFItemSpecifier='First Item')
-    s.settext('who', 'Bank SMS')
-    s.if_(V('hasSender'), 4, text='yes')
-    s.settext('who', V('sender'))
-    s.end()
+    memo_prompt(s, amount_text)
     s.if_(V('mode'), 4, text='test')
-    s.alert('Test: this message would be sent (', amount_text, ' · ', V('who'), '). Nothing was saved or sent.')
+    s.alert('Test: this message would be sent. The memo box would say:\n\n', V('memoPrompt'), '\n\nNothing was saved or sent.')
     s.output('would-send')
     s.end()
 
@@ -434,9 +510,8 @@ def build_memos(api: str) -> list:
     # here on the SMS cannot be lost.
     s.save_file(s.text(V('payload')), V('filePath'))
 
-    # One line above the text box, the amount only ("₹10.00"); Done sends it.
-    rupees = s.replace(amount_text, r'^(?:INR|Rs\.?|₹)\s*|^(?:debited|credited|withdrawn|deducted)\s+(?:by|for|with|of)\s+', '₹', case=False)
-    answer = s.ask(rupees)
+    # Two or three short lines above the text box; Done sends it.
+    answer = s.ask(V('memoPrompt'))
     s.settext('memoText', answer)
     memo_len = s.count(V('memoText'), chars=True)
     s.if_(memo_len, 2, number=0)

@@ -1,0 +1,59 @@
+{
+  "_about": "How Fintrack Memos words the memo prompt from the SMS, on the phone, before anything is sent: '−₹10.00 · UPI' / 'To NAME' / 'HDFC ••6714'. Every pattern is ICU (NSRegularExpression), matched case-insensitively against the SMS with whitespace collapsed. Check changes with: osascript -l JavaScript test-prompt.js",
+  "rupee": "^(?:INR|Rs\\.?|₹)\\s*|^(?:debited|credited|withdrawn|deducted)\\s+(?:by|for|with|of)\\s+",
+  "direction": "\\b(?:debited|spent|sent|paid|withdrawn|withdrawal|purchase|charged|deducted|levied|thank you for using|credited|received|deposited|refund(?:ed)?|reversed|reversal|cashback)\\b",
+  "credit": "^(?:credited|received|deposited|refund|refunded|reversed|reversal|cashback)$",
+  "methods": [
+    [
+      "Card",
+      "\\bcard\\b"
+    ],
+    [
+      "Net banking",
+      "\\bnet\\s*banking\\b"
+    ],
+    [
+      "RTGS",
+      "\\brtgs\\b"
+    ],
+    [
+      "NEFT",
+      "\\bneft\\b"
+    ],
+    [
+      "IMPS",
+      "\\bimps\\b"
+    ],
+    [
+      "UPI",
+      "\\bupi\\b|\\bvpa\\b|\\b[\\w.-]{2,}@[a-z]{2,}\\b"
+    ],
+    [
+      "ATM",
+      "\\batm\\b|\\bcash withdrawal\\b|\\bwithdrawn\\b"
+    ],
+    [
+      "AutoPay",
+      "\\b(?:e-?mandate|mandate|autopay|auto-?debit|standing instruction)\\b"
+    ]
+  ],
+  "charge": "\\b(?:charges?|fees?|gst|penalty|amc)\\b",
+  "payee": [
+    "^.*?\\b(?:to|towards)\\s+(?:VPA\\s+)?[\\w.-]+@[\\w.-]+\\s+\\(([^()]+)\\).*$",
+    "^.*?\\b(?:to|towards)\\s+(?:VPA\\s+)?[\\w.-]+@[\\w.-]+\\s+(?!on\\b)([A-Za-z][^.@]*?)\\s+on\\s+(?:date\\s+)?\\d.*$",
+    "^.*?\\b(?:to|towards|from|by)\\s+(?:VPA\\s+)?([\\w.-]+@[\\w.-]+?)(?:[\\s.,;)]|$).*$",
+    "^.*?\\bupi/p2[am]/\\d+/([^/]+?)(?:\\s+not you.*|/.*)?$",
+    "^.*?;\\s*([^;.]+?)\\s+credited\\b.*$",
+    "^.*?\\btrf to\\s+(.+?)\\s+ref.*$",
+    "^.*?\\brefund (?:from|by|of)\\s+(.+?)(?:\\s+on\\s+.*|\\.\\s.*|\\.)?$",
+    "^.*?\\bat\\s+(?!\\d)(.+?)\\s+(?:on|from)\\s+.*$",
+    "^.*?\\bon\\s+\\d{1,2}[-\\s]?[A-Za-z]{3}[-\\s]?\\d{2,4}\\s+(?:on|at)\\s+([^.]+?)(?:\\.\\s.*|\\.)?$",
+    "^.*?\\btowards\\s+(.+?)\\s+on\\s+.*$",
+    "^.*?\\bto\\s+(?!your\\b|the\\b|a/c|ac\\b|account\\b|acct\\b|\\d)(.+?)\\s+(?:on|ref)\\b.*$",
+    "^.*?\\bfrom\\s+(?!your\\b|the\\b|a/c|ac\\b|account\\b|acct\\b)(.+?)\\s+(?:on|ref)\\b.*$",
+    "^.*?\\btowards\\s+([^.]+?)(?:\\.\\s.*|\\.)?$"
+  ],
+  "account": "^.*?\\b(?:credit\\s*card|debit\\s*card|card|a/c|acct|account|ac)\\b\\.?(?:\\s*(?:no\\.?|number))?\\s*(?:ending(?:\\s+(?:with|in))?\\s*[:-]?\\s*)?[x*]*\\s*(\\d{3,4})\\b.*$",
+  "bank": "\\b(?:HDFC|ICICI|SBI|Axis|Kotak|IDFC|IndusInd|Yes Bank|Federal|PNB|Canara|RBL|IDBI|AU Bank)\\b",
+  "payeeMax": "^(.{36}).+$"
+}
