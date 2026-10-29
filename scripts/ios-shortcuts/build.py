@@ -319,13 +319,9 @@ def build_memos(api: str) -> list:
 
     s.setvar('now', s.act('date', 'CurrentDate', WFDateActionMode='Current Date'))
     s.setvar('today', s.fmt_date(V('now'), 'yyyyMMdd'))
-    s.setvar('minuteNow', s.fmt_date(V('now'), 'yyyyMMddHHmm'))
-    earlier = s.act('adjustdate', s.name('AdjustDate'), WFAdjustOperation='Subtract', WFDate=tokens(V('now')),
-                    WFDuration={'Value': {'Unit': 'min', 'Magnitude': '1'}, 'WFSerializationType': 'WFQuantityFieldValue'})
-    s.setvar('minutePrev', s.fmt_date(earlier, 'yyyyMMddHHmm'))
 
     # Folders first: reading a file whose folder is missing fails even when told not to.
-    for folder in ['Fintrack', 'Fintrack/outbox', 'Fintrack/failed', 'Fintrack/locks', 'Fintrack/notified']:
+    for folder in ['Fintrack', 'Fintrack/outbox', 'Fintrack/failed', 'Fintrack/notified']:
         s.ensure_folder(folder)
 
     def notify_once(kind_name, *body):
@@ -342,8 +338,9 @@ def build_memos(api: str) -> list:
     s.alert('Connect this iPhone to Fintrack (', host, ')? Bank and card SMS will be sent there with the memo you type. '
             'OTPs and personal messages never leave this iPhone.', cancel=True)
     request_file = s.save_file(s.text(s.dictionary([('code', (code,))])), 'Fintrack/pair-request.json')
+    # Left in place (overwritten next time): it only holds a code that is spent
+    # once used, and deleting it would cost a confirmation prompt.
     reply = s.request(API, '/api/v1/devices/pair', 'POST', body_file=request_file)
-    s.delete(request_file)
     s.settext('newKey', s.get_value(s.read_json(reply), 'key'))
     key_ok = s.count(s.match(V('newKey'), KEY_PATTERN))
     s.if_(key_ok, 4, number=0)
@@ -437,8 +434,9 @@ def build_memos(api: str) -> list:
     # here on the SMS cannot be lost.
     s.save_file(s.text(V('payload')), V('filePath'))
 
-    snippet = s.replace(V('body'), r'(?s)^(.{140}).+$', '$1…')
-    answer = s.ask(amount_text, ' · ', V('who'), '\n', snippet, '\n\nWhat was this for? Leave empty to skip.')
+    # One line above the text box, the amount only ("₹10.00"); Done sends it.
+    rupees = s.replace(amount_text, r'^(?:INR|Rs\.?|₹)\s*|^(?:debited|credited|withdrawn|deducted)\s+(?:by|for|with|of)\s+', '₹', case=False)
+    answer = s.ask(rupees)
     s.settext('memoText', answer)
     memo_len = s.count(V('memoText'), chars=True)
     s.if_(memo_len, 2, number=0)
@@ -495,14 +493,10 @@ def build_memos(api: str) -> list:
     s.end()
 
     # ── Send everything waiting, oldest first ──
-    # One sender at a time: a run that finds a lock from this or the last minute
-    # leaves its file to that sender, which re-lists the outbox before it stops.
-    for minute in ('minuteNow', 'minutePrev'):
-        held = s.count(s.get_file('Fintrack/locks/', V(minute), '.lock'))
-        s.if_(held, 2, number=0)
-        s.output('busy')
-        s.end()
-    s.save_file(s.text('sending'), 'Fintrack/locks/', V('minuteNow'), '.lock')
+    # No lock between runs: two SMS at once may both send the same file, and
+    # the server's upsert by submissionId makes that harmless. The only delete
+    # is the sent file itself (iOS asks unless Settings › Shortcuts › Advanced ›
+    # Allow Deleting Without Confirmation is on).
 
     for _ in range(2):
         s.if_(V('halt'), 4, text='no')
@@ -550,20 +544,6 @@ def build_memos(api: str) -> list:
         s.end()
         s.end()
 
-    lock = s.get_file('Fintrack/locks/', V('minuteNow'), '.lock')
-    s.if_(s.count(lock), 2, number=0)
-    s.delete(lock)
-    s.end()
-    for folder, keep in (('Fintrack/locks', ('minuteNow', 'minutePrev')), ('Fintrack/notified', ('today', 'today'))):
-        s.each(s.folder_files(folder))
-        s.setvar('oldFile', V('Repeat Item'))
-        s.settext('oldName', s.act('getitemname', s.name('Name'), WFInput=attach(V('oldFile'))))
-        s.if_(V('oldName'), 999, text=(V(keep[0]),))
-        s.if_(V('oldName'), 999, text=(V(keep[1]),))
-        s.delete(V('oldFile'))
-        s.end()
-        s.end()
-        s.end()
 
     waiting = s.count(s.folder_files('Fintrack/outbox'))
     s.if_(V('notConnected'), 4, text='yes')
