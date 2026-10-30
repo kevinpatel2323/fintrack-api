@@ -22,6 +22,7 @@ src/
   main.ts                    Bootstrap: CORS, ValidationPipe (whitelist+transform), port
   imports/                   Statement upload, preview, revert, transaction range queries
   transactions/              Manual transaction creation, category assignment
+  accounts/                  Bank accounts and the holder name each is shown by
   friends/                   Friend CRUD + TransactionFriendTag CRUD + settlement links
   categories/                Category CRUD (name, color, icon)
   dashboard/                 Read-only aggregation endpoints for dashboard widgets
@@ -44,8 +45,19 @@ src/
 | GET | `/imports` | List imports (paginated: `?page=&limit=&accountNumber=`) |
 | GET | `/imports/last` | Most recent import |
 | GET | `/imports/:id` | Single import by id |
-| GET | `/imports/accounts` | All account numbers |
+| GET | `/imports/accounts` | All account numbers (the web uses `/accounts`, which carries the holder names) |
 | GET | `/imports/transactions/range` | Transactions in `?start=&end=&accountNumber=` |
+
+### Accounts (`/accounts`)
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/accounts` | Every account: `{ id, accountNumber, holderName, transactionCount, lastTransactionDate }`, by number |
+| PATCH | `/accounts/:id` | Name the account after its holder (`{ holderName: string\|null }`, 100 max); blank or `null` clears it |
+
+`accounts.holder_name` is what the app shows in place of the account number everywhere (the
+web, and the category CSV's Account column); NULL until named, never blank
+(`chk_accounts_holder_name_not_blank`). The number stays the account's identity: statements
+match an account by it, and filters (`?accountNumber=`) still take it.
 
 ### Transactions (`/transactions`)
 | Method | Path | Description |
@@ -121,6 +133,7 @@ Hard limits: 10,000 occurrences per subscription, 50,000 total per request.
 | GET | `/api/v1/devices/me` | `{ status: 'ok' }` for a live key |
 | POST | `/api/v1/memos` | Upsert by `submissionId`: an SMS (+ memo), or a memo alone for an SMS already sent |
 | GET | `/api/v1/memos/pending` | This device's last-24 h rows with no memo, as one-line summaries |
+| GET | `/api/v1/accounts` | `{ status: 'ok', names: { last4: holderName } }` for named bank accounts; the Shortcut saves it for offline memo prompts. 404 unless `MEMO_DEVICE_ACCOUNT_NAMES=true` |
 
 ## Transaction memos (`src/transaction-memos/`)
 
@@ -145,6 +158,15 @@ transaction.** The brand is Fintrack only; never name the third-party shortcut i
   `MEMO_DATA_KEY`; with no key, ingest fails closed. Never log device request bodies.
 - `card_id` is set only for an exact, unambiguous `cards.last4` match. Alert last4 can
   differ from the statement's (HDFC alerts say 0531 for card 2209); no alias map yet.
+- An account SMS is shown by its account's holder name when its last4 finds exactly one
+  account and it is named (`holderNamesByLast4` in `memo-summary.ts`, the web's rule):
+  device replies then carry `accountName` (left out otherwise) and summaries end with
+  the name. The Shortcut builds its memo prompt from the SMS ("HDFC ••6714"), then shows
+  the reply's `accountName`, or offline the name it saved from `GET /api/v1/accounts`
+  (`Fintrack/account-names.txt`, refreshed on charger/Wi-Fi/scheduled runs). Only a bank
+  account mention takes a name, never a card. The offline copy needs
+  `MEMO_DEVICE_ACCOUNT_NAMES=true`: without it a device key stays write-only (beyond its own
+  rows, it reads nothing), and offline prompts keep "HDFC ••6714".
 - `scripts/transaction-memos-e2e.mjs` exercises every route against a local database.
 
 ## Statement parsing (`src/imports/parsers/hdfc.parser.ts`)

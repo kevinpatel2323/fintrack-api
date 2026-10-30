@@ -32,6 +32,9 @@ HERE = Path(__file__).resolve().parent
 OBJ = '￼'
 SHORTCUT_VERSION = '2.0'
 KEY_PATTERN = r'^fintrack_[A-Za-z0-9_-]{43}$'
+# The holder names of the user's named bank accounts by their last four digits,
+# saved by refresh_account_names() for memo prompts written with no signal.
+ACCOUNT_NAMES = 'Fintrack/account-names.txt'
 # The imported shortcut this grew from. Hex so the name never appears in our own
 # source; the build refuses any output that still contains it.
 THIRD_PARTY_NAME = bytes.fromhex('6d756e696d').decode()
@@ -228,7 +231,8 @@ class Shortcut:
             'Value': {'WFDictionaryFieldValueItems': dict_items(items)}, 'WFSerializationType': 'WFDictionaryFieldValue'})
 
     def get_value(self, src, key):
-        return self.act('getvalueforkey', self.name('Value'), WFInput=attach(src), WFGetDictionaryValueType='Value', WFDictionaryKey=key)
+        return self.act('getvalueforkey', self.name('Value'), WFInput=attach(src), WFGetDictionaryValueType='Value',
+                        WFDictionaryKey=key if isinstance(key, str) else textparam(key))
 
     def set_value(self, dict_var, key, *value):
         result = self.act('setvalueforkey', self.name('SetValue'), WFDictionary=attach(V(dict_var)), WFDictionaryKey=key,
@@ -300,6 +304,10 @@ def drain(s: Shortcut, API, passes: int = 2, only=None) -> None:
             reply_dict = s.read_json(reply)
             s.settext('status', s.get_value(reply_dict, 'status'))
             s.settext('statusCode', s.get_value(reply_dict, 'statusCode'))
+            if only is not None:
+                # The holder name of the SMS's bank account, once it is named
+                # in Fintrack; absent otherwise. The memo prompt shows it.
+                s.settext('accountName', s.get_value(reply_dict, 'accountName'))
             if attempt:
                 s.end()
         s.settext('handled', 'no')
@@ -330,14 +338,31 @@ def drain(s: Shortcut, API, passes: int = 2, only=None) -> None:
 
 
 
+def refresh_account_names(s: Shortcut, API) -> None:
+    """Saves Fintrack's holder names for the user's bank accounts (`{ "6714":
+    "Kevin Patel" }`) to ACCOUNT_NAMES, so a memo prompt shows the name even
+    with no signal. Only after the outbox went through ($halt still "no"), and
+    only an "ok" reply replaces the saved copy: a retry or an unpaired 404
+    leaves it as it was. Runs on charger, Wi-Fi, scheduled and manual runs,
+    never while a bank SMS waits for its memo.
+    """
+    s.if_(V('halt'), 4, text='no')
+    names_reply = s.read_json(s.request(API, '/api/v1/accounts', 'GET', key_var='token'))
+    s.if_(s.get_value(names_reply, 'status'), 4, text='ok')
+    s.save_file(s.text(s.get_value(names_reply, 'names')), ACCOUNT_NAMES)
+    s.end()
+    s.end()
+
+
 # ── Fintrack Memos ─────────────────────────────────────────────────────────
 
 def memo_prompt(s: Shortcut, amount_text) -> None:
-    """Sets $memoPrompt from the SMS ($norm), read on the phone so it works offline:
+    """Sets $memoPrompt, $accountLine and $savedName from the SMS ($norm), read
+    on the phone so it works offline; prompt_text() puts them together:
 
         −₹10.00 · UPI
         To MINAL RAJENDRABHAI PATEL
-        HDFC ••6714
+        HDFC ••6714            (or "Kevin Patel": see $savedName)
 
     A line is left out when the SMS doesn't say. Mirrors test-prompt.js.
     """
@@ -394,7 +419,7 @@ def memo_prompt(s: Shortcut, amount_text) -> None:
     s.end()
 
     # Which account: "HDFC ••6714".
-    s.settext('account', s.replace(V('norm'), RULES['account'], '••$1', case=False))
+    s.settext('account', s.replace(V('norm'), RULES['account'], '••$2', case=False))
     s.if_(V('account'), 4, text=(V('norm'),))
     s.settext('account', '')
     s.end()
@@ -403,9 +428,38 @@ def memo_prompt(s: Shortcut, amount_text) -> None:
     s.if_(s.count(banks), 2, number=0)
     s.settext('bankName', s.act('getitemfromlist', s.name('Bank'), WFInput=attach(banks), WFItemSpecifier='First Item'))
     s.end()
-    line = s.replace(s.text(V('bankName'), ' ', V('account')), r'^\s+|\s+$', '')
-    s.if_(s.count(line, chars=True), 2, number=0)
-    s.settext('memoPrompt', V('memoPrompt'), '\n', line)
+    s.settext('accountLine', s.replace(s.text(V('bankName'), ' ', V('account')), r'^\s+|\s+$', ''))
+
+    # Its holder's name, as last saved on this iPhone (refresh_account_names),
+    # when the SMS names a bank account; a card never takes an account's name.
+    s.settext('savedName', '')
+    kind = s.replace(V('norm'), RULES['account'], '$1', case=False)
+    s.if_(s.count(s.match(kind, RULES['bankAccount'], case=False)), 2, number=0)
+    s.settext('accountDigits', s.replace(V('norm'), RULES['account'], '$2', case=False))
+    saved = s.read_json(s.text(s.get_file(ACCOUNT_NAMES)))
+    s.settext('savedName', s.get_value(saved, V('accountDigits')))
+    s.end()
+
+
+def prompt_text(s: Shortcut) -> None:
+    """Sets $promptText: $memoPrompt with the account line under it, which is
+    the account's holder name ("Kevin Patel") wherever one is known:
+    - the SMS reached Fintrack: the name the reply carried ($accountName);
+    - not sent (no signal, not paired): the name saved on this iPhone ($savedName);
+    - otherwise, or for an account not named yet: as read from the SMS ("HDFC ••6714").
+    """
+    s.settext('promptAccount', V('accountLine'))
+    s.if_(V('status'), 5, text='accepted')
+    s.if_(s.count(V('savedName'), chars=True), 2, number=0)
+    s.settext('promptAccount', V('savedName'))
+    s.end()
+    s.end()
+    s.if_(s.count(V('accountName'), chars=True), 2, number=0)
+    s.settext('promptAccount', V('accountName'))
+    s.end()
+    s.settext('promptText', V('memoPrompt'))
+    s.if_(s.count(V('promptAccount'), chars=True), 2, number=0)
+    s.settext('promptText', V('memoPrompt'), '\n', V('promptAccount'))
     s.end()
 
 
@@ -540,8 +594,11 @@ def build_memos(api: str) -> list:
     s.if_(V('filtered'), 4, text='yes')
     amount_text = s.act('getitemfromlist', s.name('Amount'), WFInput=attach(amount_hit), WFItemSpecifier='First Item')
     memo_prompt(s, amount_text)
+    s.settext('accountName', '')
+    s.settext('status', '')
     s.if_(V('mode'), 4, text='test')
-    s.alert('Test: this message would be sent. The memo box would say:\n\n', V('memoPrompt'), '\n\nNothing was saved or sent.')
+    prompt_text(s)
+    s.alert('Test: this message would be sent. The memo box would say:\n\n', V('promptText'), '\n\nNothing was saved or sent.')
     s.output('would-send')
     s.end()
 
@@ -602,7 +659,8 @@ def build_memos(api: str) -> list:
 
     # Two or three short lines above the text box. Swiping it away ends the run
     # here, which is fine: the SMS is already on its way.
-    s.settext('memoText', s.ask(V('memoPrompt')))
+    prompt_text(s)
+    s.settext('memoText', s.ask(V('promptText')))
     memo_len = s.count(V('memoText'), chars=True)
 
     s.settext('locOk', 'no')
@@ -672,6 +730,7 @@ def build_memos(api: str) -> list:
     s.output('kept')
     s.end()
     drain(s, API)
+    refresh_account_names(s, API)
     s.end()
 
     waiting = s.count(s.folder_files('Fintrack/outbox'))

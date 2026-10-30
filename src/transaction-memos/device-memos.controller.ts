@@ -51,4 +51,15 @@ export class DeviceMemosController {
   pending(@Req() req: DeviceRequest) {
     return this.memos.pending(req.device!);
   }
+
+  // `{ status: 'ok', names: { last4: holderName } }`, saved on the phone so a
+  // memo prompt written with no signal still shows the account by its holder.
+  // Off (404) unless MEMO_DEVICE_ACCOUNT_NAMES=true: it is the one read a
+  // device key gets beyond its own rows, so it waits for an explicit opt-in.
+  @Get('accounts')
+  @UseGuards(DeviceKeyGuard)
+  accountNames(@Req() req: DeviceRequest) {
+    if (process.env.MEMO_DEVICE_ACCOUNT_NAMES !== 'true') throw routeNotFound(req);
+    return this.memos.deviceAccountNames();
+  }
 }

@@ -36,16 +36,24 @@ function prompt(sms) {
     if (!payee && found !== norm) payee = found;
   }
   payee = replace(payee, rules.payeeMax, '$1…');
-  let account = replace(norm, rules.account, '••$1');
+  let account = replace(norm, rules.account, '••$2');
   if (account === norm) account = '';
+  // Offline, a bank account (never a card) is shown by the holder name saved on the phone.
+  const kind = replace(norm, rules.account, '$1');
+  const savedName = matches(kind, rules.bankAccount).length ? SAVED_NAMES[replace(norm, rules.account, '$2')] || '' : '';
   const bank = matches(norm, rules.bank)[0] || '';
   const lines = [`${sign}${rupees}${method ? ` · ${method}` : ''}`];
   // Who: 'From' for money in, 'At' for an ATM, 'For' for a bank charge, else 'To'.
   const lead = sign === '+' ? 'From' : method === 'ATM' ? 'At' : method === 'Bank charge' ? 'For' : 'To';
   if (payee) lines.push(`${lead} ${payee}`);
-  if (bank || account) lines.push([bank, account].filter(Boolean).join(' '));
+  if (savedName) lines.push(savedName);
+  else if (bank || account) lines.push([bank, account].filter(Boolean).join(' '));
   return lines.join('\n');
 }
+
+// What the phone would have saved from GET /api/v1/accounts (account-names.txt).
+// Card 2209's SMS keeps "HDFC ••2209": card digits never take an account's name.
+const SAVED_NAMES = { 6714: 'Kevin Patel', 2209: 'Not a card' };
 
 const samples = [
   'Sent Rs.10.00\nFrom HDFC Bank A/C *6714\nTo MINAL RAJENDRABHAI PATEL\nOn 30/10/26\nRef 132061008935\nNot You?\nCall 18002586161/SMS BLOCK UPI to 7308080808',

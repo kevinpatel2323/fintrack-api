@@ -4,19 +4,23 @@ import { Repository } from 'typeorm';
 import { TransactionMemo } from '../database/entities/transaction-memo.entity';
 import { PairedDevice } from '../database/entities/paired-device.entity';
 import { Card } from '../database/entities/card.entity';
+import { Account } from '../database/entities/account.entity';
 import { DeviceMemoDto } from './dto/device-memo.dto';
 import { ListMemosQueryDto } from './dto/web-memos.dto';
 import { PairedDevicesService } from './paired-devices.service';
 import { loadMemoKey, seal, unseal } from './secret-box';
 import { isOtpMessage, ParsedSms, parseSms, SMS_PARSER_VERSION, SmsParseResult } from './sms-parser';
 import { bankForSender, contentHash, maskCardNumbers, roundLocation } from './sms-privacy';
-import { memoSummary } from './memo-summary';
+import { holderNamesByLast4, memoHolderName, memoSummary } from './memo-summary';
 
 export type DeviceReplyStatus = 'accepted' | 'refused' | 'invalid' | 'retry';
 export interface DeviceReply {
   status: DeviceReplyStatus;
   id?: string;
   summary?: string;
+  // The holder name of the bank account the SMS names, once that account is
+  // named; the phone's memo prompt shows it in place of "HDFC ••6714".
+  accountName?: string;
   duplicate?: boolean;
   message?: string;
 }
@@ -69,6 +73,8 @@ export class TransactionMemosService {
     private readonly memos: Repository<TransactionMemo>,
     @InjectRepository(Card)
     private readonly cards: Repository<Card>,
+    @InjectRepository(Account)
+    private readonly accounts: Repository<Account>,
     private readonly devices: PairedDevicesService,
   ) {}
 
@@ -122,7 +128,7 @@ export class TransactionMemosService {
       .returning(['id'])
       .execute();
     const newId: string | undefined = inserted.raw?.[0]?.id;
-    if (newId) return { status: 'accepted', id: String(newId), summary: memoSummary(row as TransactionMemo) };
+    if (newId) return { status: 'accepted', id: String(newId), ...(await this.summaryFor(row as TransactionMemo)) };
 
     // Already here: a retry, the memo following its SMS, or one SMS sent twice.
     const existing = await this.memos.findOne({
@@ -140,7 +146,7 @@ export class TransactionMemosService {
         Object.assign(existing, patch);
       }
     }
-    return { status: 'accepted', id: existing.id, summary: memoSummary(existing), duplicate: true };
+    return { status: 'accepted', id: existing.id, ...(await this.summaryFor(existing)), duplicate: true };
   }
 
   // The memo and/or location for an SMS sent earlier: the phone sends each SMS
@@ -178,7 +184,7 @@ export class TransactionMemosService {
       await this.memos.update({ id: row.id }, { ...patch, updatedAt: new Date() });
       Object.assign(row, patch);
     }
-    return { status: 'accepted', id: row.id, summary: memoSummary(row) };
+    return { status: 'accepted', id: row.id, ...(await this.summaryFor(row)) };
   }
 
   /** This phone's recent rows still without a memo, newest first, as one-line summaries. */
@@ -191,10 +197,15 @@ export class TransactionMemosService {
       .orderBy('m.created_at', 'DESC')
       .limit(5)
       .getMany();
+    const names = await this.holderNames();
     return {
       status: 'ok',
       count: rows.length,
-      data: rows.map((m) => ({ submissionId: m.submissionId, summary: memoSummary(m), receivedAt: m.receivedAt ?? m.createdAt })),
+      data: rows.map((m) => ({
+        submissionId: m.submissionId,
+        summary: memoSummary(m, memoHolderName(m, names)),
+        receivedAt: m.receivedAt ?? m.createdAt,
+      })),
     };
   }
 
@@ -327,6 +338,38 @@ export class TransactionMemosService {
   }
 
   // Only an exact, unambiguous last-4 match on a card links the row to it.
+  /** The reply's one-line summary, with the account's holder name when it has one. */
+  private async summaryFor(row: TransactionMemo): Promise<Pick<DeviceReply, 'summary' | 'accountName'>> {
+    const accountName = memoHolderName(row, await this.holderNames());
+    // Left out rather than null, so the Shortcut reads a name or nothing.
+    return { summary: memoSummary(row, accountName), ...(accountName ? { accountName } : {}) };
+  }
+
+  /**
+   * The holder names of the named bank accounts by their last four digits. The
+   * shortcut keeps them for memo prompts written with no signal. A failure is
+   * a `retry`, never an empty list, so a saved copy is not wiped.
+   */
+  async deviceAccountNames() {
+    return { status: 'ok', names: Object.fromEntries(await this.loadHolderNames()) };
+  }
+
+  private async loadHolderNames(): Promise<Map<string, string>> {
+    const accounts = await this.accounts.find({ select: { accountNumber: true, holderName: true } });
+    return holderNamesByLast4(accounts);
+  }
+
+  // A name is a nicety: if the accounts can't be read, the SMS is still
+  // accepted and the summary keeps "HDFC ••6714".
+  private async holderNames(): Promise<Map<string, string>> {
+    try {
+      return await this.loadHolderNames();
+    } catch (error) {
+      this.logger.warn(`Account names unavailable: ${error instanceof Error ? error.name : 'unknown error'}`);
+      return new Map();
+    }
+  }
+
   private async matchCard(fields: ParsedSms): Promise<string | null> {
     if (fields.instrument !== 'card' || !fields.last4) return null;
     const cards = await this.cards.find({ where: { last4: fields.last4 }, select: { id: true } });
