@@ -450,10 +450,13 @@ export class DashboardService {
 
   async computeAccountSummary(): Promise<any[]> {
     // Step 1: Get all accounts with their latest transaction
+    // Entity properties, not renamed columns: getMany() builds each account
+    // from its primary key, and with `a.id AS "accountId"` it found none and
+    // returned no accounts at all.
     const accounts = await this.accountsRepository
       .createQueryBuilder('a')
-      .select('a.id', 'accountId')
-      .addSelect('a.account_number', 'accountNumber')
+      .select('a.id')
+      .addSelect('a.accountNumber')
       .getMany();
 
     // Step 2: For each account, get aggregated transaction data
